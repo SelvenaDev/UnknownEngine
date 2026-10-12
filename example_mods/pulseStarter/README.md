@@ -50,6 +50,17 @@ onSongStart -> run logic/extra.pulse
 
 起動できるのは `logic/` 配下の `.pulse` ファイルだけです。OSの `.sh`、`.py`、`.hx` などを実行する機能ではありません。
 
+## 繰り返しと待機
+
+```text
+everyBeat -> setProperty camGame.zoom 1.05
+everyStep -> setProperty camHUD.zoom 1.01
+repeat 4 everyBeat -> emit.ZoomCamera 1.10
+wait 32 steps -> setProperty camGame.zoom 1.00
+```
+
+`everyBeat` / `everyStep` は無期限に実行されます。`repeat` は指定回数だけ、`wait` は曲開始から指定した拍・ステップで一度だけ実行します。
+
 `camGame.zoom` はゲームカメラ、`camHUD.zoom` はHUDカメラ、`health` はプレイヤーの体力を表します。beat／step番号は0始まりです。ズームは0.25〜2.5、体力は0〜2、体力の加算は-2〜2に制限されます。行頭または命令末尾の `#` 以降はコメントです。
 
 Pulseは任意のHaxe/HScript、ファイルアクセス、reflection、eval、ループを実行しません。無効な命令はログに出して無視します。そのため、複雑な処理や公式APIの全機能が必要な場合は、従来どおりPolymodのHScript scripted class / moduleを使ってください。

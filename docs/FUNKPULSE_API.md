@@ -32,6 +32,31 @@ onBeatHit 64 -> run logic/section2.pulse
 
 対象ファイルは安全のため `logic/` 配下の `.pulse` に限定されます。`..`、絶対パス、`.py`・`.sh`・`.hx` などの外部ファイルは起動できません。読み込んだファイルは同じMod内で一度だけ読み込まれ、循環参照も無視されます。
 
+## 繰り返しと待機
+
+毎拍・毎ステップに実行するには、`everyBeat` または `everyStep` を使います。これは無期限に繰り返します。
+
+```text
+everyBeat -> setProperty camGame.zoom 1.05
+everyStep -> setProperty camHUD.zoom 1.01
+```
+
+回数を制限する場合は `repeat` を使います。最大9999回です。
+
+```text
+repeat 4 everyBeat -> emit.ZoomCamera 1.10
+repeat 16 everyStep -> addHealth 0.01
+```
+
+曲開始から指定した拍・ステップまで待って一度だけ実行するには `wait` を使います。
+
+```text
+wait 8 beats -> setProperty camGame.zoom 1.20
+wait 32 steps -> emit.ZoomCamera 1.00
+```
+
+`wait` は曲開始を基準にします。Pulseは安全性のため、`while`、`for`、`sleep`、秒単位の待機、OSコマンド実行には対応していません。
+
 行頭または命令末尾の `#` 以降はコメントです。1ファイルの上限は128KiB、命令数の上限は1024個です。
 
 ## 公式ScriptEventコールバック対応

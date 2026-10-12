@@ -12,6 +12,9 @@ onNoteHit -> addHealth 0.01
 onBeatHit 16 -> emit.ZoomCamera 1.10
 onBeatHit 20 -> emit.SetCameraBop 2.00
 onBeatHit 24 -> setScrollSpeed 1.25
+everyBeat -> setProperty camHUD.zoom 1.00
+repeat 4 everyBeat -> emit.ZoomCamera 1.10
+wait 32 steps -> setProperty camGame.zoom 1.00
 
 # Legacy aliases remain valid:
 # beat 16 -> game.zoom 1.00

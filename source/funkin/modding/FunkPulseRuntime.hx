@@ -19,6 +19,7 @@ private typedef FunkPulseCommand =
   var source:String;
   var filePath:String;
   var packRoot:String;
+  var repeatRemaining:Int;
 }
 
 /**
@@ -49,6 +50,10 @@ class FunkPulseRuntime
     '^(beat|step|onCreate|onStateCreate|onDestroy|onAdd|onUpdate|onPause|onResume|onSongStart|onSongEnd|onGameOver|onNoteIncoming|onNoteHit|onNoteMiss|onNoteHoldDrop|onNoteGhostMiss|onStepHit|onBeatHit|onSongEvent|onCountdownStart|onCountdownStep|onCountdownEnd|onSongLoaded|onSongRetry|onStateChangeBegin|onStateChangeEnd|onSubStateOpenBegin|onSubStateOpenEnd|onSubStateCloseBegin|onSubStateCloseEnd|onFocusGained|onFocusLost|onCapsuleSelected|onDifficultySwitch|onSongSelected|onFreeplayIntroDone|onFreeplayOutro|onFreeplayClose|onCharacterSelect|onCharacterDeselect|onCharacterConfirm|onDialogueStart|onDialogueLine|onDialogueCompleteLine|onDialogueSkip|onDialogueEnd)(?:\\s+([0-9]+))?\\s*->\\s*run\\s+([A-Za-z0-9_/-]+\\.pulse)$',
     ''
   );
+  static final ACTION_PATTERN:String = '(game\\.zoom|hud\\.zoom|health\\.add|setProperty\\s+(?:camGame\\.zoom|camHUD\\.zoom|PlayState\\.instance\\.camGame\\.zoom|PlayState\\.instance\\.camHUD\\.zoom|health|PlayState\\.instance\\.health|currentCameraZoom|defaultHUDCameraZoom|playbackRate|instrumentalVolume|playerVocalsVolume|opponentVocalsVolume|cameraBopIntensity|hudCameraZoomIntensity|cameraZoomRate|cameraZoomRateOffset)|addHealth|setHealth|cameraZoom|hudZoom|setCameraZoom|setHudZoom|setScrollSpeed|setPlayerScrollSpeed|setOpponentScrollSpeed|setCameraBop|emit\\.(?:ZoomCamera|ScrollSpeed|SetCameraBop|SetTargetBopSpeed|FocusCamera))';
+  static final EVERY_PATTERN:EReg = new EReg('^(everyBeat|everyStep)\\s*->\\s*' + ACTION_PATTERN + '\\s+(-?[0-9]+(?:\\.[0-9]+)?)$', '');
+  static final REPEAT_PATTERN:EReg = new EReg('^repeat\\s+([1-9][0-9]{0,3})\\s+(everyBeat|everyStep)\\s*->\\s*' + ACTION_PATTERN + '\\s+(-?[0-9]+(?:\\.[0-9]+)?)$', '');
+  static final WAIT_PATTERN:EReg = new EReg('^wait\\s+([1-9][0-9]{0,3})\\s+(beats|steps)\\s*->\\s*' + ACTION_PATTERN + '\\s+(-?[0-9]+(?:\\.[0-9]+)?)$', '');
 
   static var commands:Array<FunkPulseCommand> = [];
   static var loadedScripts:Map<String, Bool> = new Map();
@@ -126,7 +131,11 @@ class FunkPulseRuntime
     // so the newly loaded file starts on the next matching event, not mid-dispatch.
     for (command in commands.copy())
     {
-      if (command.trigger == trigger && (command.index < 0 || command.index == index)) execute(command, state);
+      if (command.trigger == trigger && (command.index < 0 || command.index == index) && command.repeatRemaining != 0)
+      {
+        if (command.repeatRemaining > 0) command.repeatRemaining--;
+        execute(command, state);
+      }
     }
   }
 
@@ -195,15 +204,63 @@ class FunkPulseRuntime
       if (commentIndex >= 0) line = StringTools.trim(line.substr(0, commentIndex));
       if (line.length == 0) continue;
 
+      var repeatRemaining:Int = -1;
+      var trigger:String = '';
+      var parsedIndex:Int = -1;
+      var action:String = '';
+      var value:Float = 0;
+
+      if (EVERY_PATTERN.match(line))
+      {
+        trigger = EVERY_PATTERN.matched(1) == 'everyBeat' ? 'onBeatHit' : 'onStepHit';
+        action = normalizeAction(EVERY_PATTERN.matched(2));
+        value = Std.parseFloat(EVERY_PATTERN.matched(3));
+      }
+      else if (REPEAT_PATTERN.match(line))
+      {
+        var parsedRepeat:Null<Int> = Std.parseInt(REPEAT_PATTERN.matched(1));
+        repeatRemaining = parsedRepeat == null ? 0 : parsedRepeat;
+        trigger = REPEAT_PATTERN.matched(2) == 'everyBeat' ? 'onBeatHit' : 'onStepHit';
+        action = normalizeAction(REPEAT_PATTERN.matched(3));
+        value = Std.parseFloat(REPEAT_PATTERN.matched(4));
+      }
+      else if (WAIT_PATTERN.match(line))
+      {
+        var parsedWait:Null<Int> = Std.parseInt(WAIT_PATTERN.matched(1));
+        parsedIndex = parsedWait == null ? -1 : parsedWait;
+        trigger = WAIT_PATTERN.matched(2) == 'beats' ? 'onBeatHit' : 'onStepHit';
+        repeatRemaining = 1;
+        action = normalizeAction(WAIT_PATTERN.matched(3));
+        value = Std.parseFloat(WAIT_PATTERN.matched(4));
+      }
+
+      if (trigger != '')
+      {
+        if (Math.isNaN(value) || !isSafePropertyValue(action, value))
+        {
+          trace('[FunkPulse] $sourceName:$lineNumber: invalid repeat/wait value; skipped.');
+          continue;
+        }
+        if (commands.length >= MAX_COMMANDS)
+        {
+          trace('[FunkPulse] Command limit reached; remaining directives were ignored.');
+          return;
+        }
+        commands.push({trigger: trigger, index: parsedIndex, action: action, value: value, source: '$sourceName:$lineNumber', filePath: '', packRoot: packRoot, repeatRemaining: repeatRemaining});
+        added++;
+        continue;
+      }
+
       if (RUN_PATTERN.match(line))
       {
-        var rawTrigger:String = RUN_PATTERN.matched(1);
-        var trigger:String = normalizeTrigger(rawTrigger);
-        var rawIndex:Null<String> = RUN_PATTERN.matched(2);
-        var parsedIndex:Null<Int> = rawIndex == null || rawIndex == '' ? -1 : Std.parseInt(rawIndex);
+        var runRawTrigger:String = RUN_PATTERN.matched(1);
+        trigger = normalizeTrigger(runRawTrigger);
+        var runRawIndex:Null<String> = RUN_PATTERN.matched(2);
+        var runParsedIndex:Null<Int> = runRawIndex == null || runRawIndex == '' ? -1 : Std.parseInt(runRawIndex);
+        parsedIndex = runParsedIndex == null ? -1 : runParsedIndex;
         var filePath:String = RUN_PATTERN.matched(3);
-        var indexedTrigger:Bool = trigger == 'onBeatHit' || trigger == 'onStepHit';
-        if (parsedIndex == null || parsedIndex < -1 || parsedIndex > MAX_INDEX || (indexedTrigger && parsedIndex < 0) || !isSafeEntry(filePath))
+        var runIndexedTrigger:Bool = trigger == 'onBeatHit' || trigger == 'onStepHit';
+        if (runParsedIndex == null || runParsedIndex < -1 || runParsedIndex > MAX_INDEX || (runIndexedTrigger && runParsedIndex < 0) || !isSafeEntry(filePath))
         {
           trace('[FunkPulse] $sourceName:$lineNumber: unsafe or invalid Pulse file; skipped.');
           continue;
@@ -213,7 +270,7 @@ class FunkPulseRuntime
           trace('[FunkPulse] Command limit reached; remaining directives were ignored.');
           return;
         }
-        commands.push({trigger: trigger, index: parsedIndex, action: 'runFile', value: 0, source: '$sourceName:$lineNumber', filePath: filePath, packRoot: packRoot});
+        commands.push({trigger: trigger, index: parsedIndex, action: 'runFile', value: 0, source: '$sourceName:$lineNumber', filePath: filePath, packRoot: packRoot, repeatRemaining: -1});
         added++;
         continue;
       }
@@ -225,11 +282,11 @@ class FunkPulseRuntime
       }
 
       var rawTrigger:String = COMMAND_PATTERN.matched(1);
-      var trigger:String = normalizeTrigger(rawTrigger);
+      trigger = normalizeTrigger(rawTrigger);
       var rawIndex:Null<String> = COMMAND_PATTERN.matched(2);
       var parsedIndex:Null<Int> = rawIndex == null || rawIndex == '' ? -1 : Std.parseInt(rawIndex);
-      var action:String = normalizeAction(COMMAND_PATTERN.matched(3));
-      var value:Float = Std.parseFloat(COMMAND_PATTERN.matched(4));
+      action = normalizeAction(COMMAND_PATTERN.matched(3));
+      value = Std.parseFloat(COMMAND_PATTERN.matched(4));
       var indexedTrigger:Bool = trigger == 'onBeatHit' || trigger == 'onStepHit';
 
       if (parsedIndex == null || parsedIndex < -1 || parsedIndex > MAX_INDEX || (indexedTrigger && parsedIndex < 0) || Math.isNaN(value))
@@ -256,7 +313,7 @@ class FunkPulseRuntime
         return;
       }
 
-      commands.push({trigger: trigger, index: parsedIndex, action: action, value: value, source: '$sourceName:$lineNumber', filePath: '', packRoot: packRoot});
+      commands.push({trigger: trigger, index: parsedIndex, action: action, value: value, source: '$sourceName:$lineNumber', filePath: '', packRoot: packRoot, repeatRemaining: -1});
       added++;
     }
     trace('[FunkPulse] $sourceName: loaded $added command(s).');
