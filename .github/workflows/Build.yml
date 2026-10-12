@@ -1,3 +1,4 @@
+
 name: Build Windows, macOS DMG, and HTML5
 
 on:
@@ -15,6 +16,7 @@ jobs:
     name: Windows EXE
     runs-on: windows-latest
     timeout-minutes: 120
+
     steps:
       - name: Checkout repository and submodules
         uses: actions/checkout@v4
@@ -22,7 +24,7 @@ jobs:
           submodules: recursive
 
       - name: Set up Haxe
-        uses: krdlab/setup-haxe@v1
+        uses: krdlab/setup-haxe@v2
         with:
           haxe-version: "4.3.7"
 
@@ -33,6 +35,10 @@ jobs:
           haxelib --global install hmm
           haxelib --global run hmm setup
           haxelib run hmm install
+
+      - name: Build Lime native library
+        shell: pwsh
+        run: haxelib run lime rebuild cpp
 
       - name: Build Windows release
         shell: pwsh
@@ -50,6 +56,7 @@ jobs:
     name: macOS DMG
     runs-on: macos-latest
     timeout-minutes: 120
+
     steps:
       - name: Checkout repository and submodules
         uses: actions/checkout@v4
@@ -69,6 +76,10 @@ jobs:
           haxelib --global run hmm setup
           haxelib run hmm install
 
+      - name: Build Lime native library
+        shell: bash
+        run: haxelib run lime rebuild mac
+
       - name: Build macOS release
         shell: bash
         run: haxelib run lime build mac -release
@@ -77,14 +88,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           APP_PATH="$(find export/release/macos/bin -maxdepth 3 -type d -name '*.app' -print -quit)"
+
           if [ -z "$APP_PATH" ]; then
-            echo "No .app bundle was produced under export/release/macos/bin."
-            echo "Inspect the build log and the output directory before changing this workflow."
+            echo "No .app bundle was produced."
             find export/release/macos/bin -maxdepth 3 -print || true
             exit 1
           fi
+
           mkdir -p export/release/macos/package
+
           hdiutil create \
             -volname "Funkin" \
             -srcfolder "$APP_PATH" \
@@ -106,6 +120,7 @@ jobs:
     name: HTML5
     runs-on: ubuntu-latest
     timeout-minutes: 120
+
     steps:
       - name: Checkout repository and submodules
         uses: actions/checkout@v4
@@ -113,7 +128,7 @@ jobs:
           submodules: recursive
 
       - name: Set up Haxe
-        uses: krdlab/setup-haxe@v1
+        uses: krdlab/setup-haxe@v2
         with:
           haxe-version: "4.3.7"
 
@@ -124,6 +139,10 @@ jobs:
           haxelib --global install hmm
           haxelib --global run hmm setup
           haxelib run hmm install
+
+      - name: Build Lime native library
+        shell: bash
+        run: haxelib run lime rebuild cpp
 
       - name: Build HTML5 release
         shell: bash
