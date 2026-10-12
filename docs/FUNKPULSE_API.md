@@ -190,3 +190,29 @@ onBeatHit 32 -> emit.FocusCamera 0
 - `ZoomCamera`
 
 新しいチャートイベントを作る場合は、公式と同じ `SongEvent` subclass を作成し、`handleEvent()`、`getTitle()`、`getEventSchema()` を実装してください。
+
+## 安全な演出命令（Pulse v1 拡張）
+
+任意のHaxeコードや任意ファイルアクセスは行わず、許可された対象・数値範囲だけを操作できます。画像はゲームのアセットとして登録済みのものだけが表示されます。
+
+```text
+# image:ID / text:ID はPulse内の演出ID（英数字・_・-のみ）
+onSongStart -> showImage logo ui/logo 100 80 hud
+onBeatHit 4 -> tween image:logo alpha 1 0.5 quadOut
+onBeatHit 8 -> tween image:logo x 400 0.5 sineOut
+onBeatHit 12 -> showText title 200 120 32 "READY!" hud
+onBeatHit 16 -> tween text:title alpha 0 0.4 quadOut
+onStepHit 32 -> setNote player 0 yOffset 80
+onStepHit 40 -> tween note:player:0 yOffset 0 0.25 quadOut
+onSongEnd -> clearVisuals
+```
+
+対応命令:
+
+- `showImage ID ASSET X Y [hud|game]` — 登録済み画像を最大64個まで表示
+- `showText ID X Y SIZE "TEXT" [hud|game]` — 最大256文字のテキストを表示
+- `tween TARGET PROPERTY VALUE SECONDS [EASE]` — `image:ID`、`text:ID`、`note:player:INDEX` を補間
+- `setNote player|opponent INDEX PROPERTY VALUE` — 表示中ノーツを変更
+- `removeVisual ID` / `clearVisuals` — 演出を破棄
+
+対象プロパティは位置、透明度、角度、倍率、ノーツの`yOffset`に限定されています。秒数は0.01〜10秒、位置は-4096〜4096、ノーツの方向インデックスは0〜3です。曲終了・リトライ・state破棄時にも演出は自動的に破棄されます。

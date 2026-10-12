@@ -9,6 +9,15 @@ import funkin.Conductor;
 import funkin.data.event.SongEventRegistry;
 import funkin.data.song.SongData.SongEventData;
 import funkin.play.PlayState;
+import funkin.graphics.FunkinSprite;
+import funkin.play.notes.NoteSprite;
+import flixel.FlxSprite;
+import flixel.FlxG;
+import flixel.text.FlxText;
+import flixel.tweens.FlxTween;
+import flixel.tweens.FlxEase;
+import funkin.Paths;
+import openfl.utils.Assets;
 
 private typedef FunkPulseCommand =
 {
@@ -20,6 +29,7 @@ private typedef FunkPulseCommand =
   var filePath:String;
   var packRoot:String;
   var repeatRemaining:Int;
+  var args:Array<String>;
 }
 
 /**
@@ -51,17 +61,22 @@ class FunkPulseRuntime
     ''
   );
   static final ACTION_PATTERN:String = '(game\\.zoom|hud\\.zoom|health\\.add|setProperty\\s+(?:camGame\\.zoom|camHUD\\.zoom|PlayState\\.instance\\.camGame\\.zoom|PlayState\\.instance\\.camHUD\\.zoom|health|PlayState\\.instance\\.health|currentCameraZoom|defaultHUDCameraZoom|playbackRate|instrumentalVolume|playerVocalsVolume|opponentVocalsVolume|cameraBopIntensity|hudCameraZoomIntensity|cameraZoomRate|cameraZoomRateOffset)|addHealth|setHealth|cameraZoom|hudZoom|setCameraZoom|setHudZoom|setScrollSpeed|setPlayerScrollSpeed|setOpponentScrollSpeed|setCameraBop|emit\\.(?:ZoomCamera|ScrollSpeed|SetCameraBop|SetTargetBopSpeed|FocusCamera))';
+  static final ADVANCED_PATTERN:EReg = new EReg('^(beat|step|onCreate|onStateCreate|onDestroy|onAdd|onUpdate|onPause|onResume|onSongStart|onSongEnd|onGameOver|onNoteIncoming|onNoteHit|onNoteMiss|onNoteHoldDrop|onNoteGhostMiss|onStepHit|onBeatHit|onSongEvent|onCountdownStart|onCountdownStep|onCountdownEnd|onSongLoaded|onSongRetry|onStateChangeBegin|onStateChangeEnd|onSubStateOpenBegin|onSubStateOpenEnd|onSubStateCloseBegin|onSubStateCloseEnd|onFocusGained|onFocusLost|onCapsuleSelected|onDifficultySwitch|onSongSelected|onFreeplayIntroDone|onFreeplayOutro|onFreeplayClose|onCharacterSelect|onCharacterDeselect|onCharacterConfirm|onDialogueStart|onDialogueLine|onDialogueCompleteLine|onDialogueSkip|onDialogueEnd)(?:\\s+([0-9]+))?\\s*->\\s*(tween|showImage|showText|setNote|removeVisual|clearVisuals)(?:\\s+(.+))?$', '');
   static final EVERY_PATTERN:EReg = new EReg('^(everyBeat|everyStep)\\s*->\\s*' + ACTION_PATTERN + '\\s+(-?[0-9]+(?:\\.[0-9]+)?)$', '');
   static final REPEAT_PATTERN:EReg = new EReg('^repeat\\s+([1-9][0-9]{0,3})\\s+(everyBeat|everyStep)\\s*->\\s*' + ACTION_PATTERN + '\\s+(-?[0-9]+(?:\\.[0-9]+)?)$', '');
   static final WAIT_PATTERN:EReg = new EReg('^wait\\s+([1-9][0-9]{0,3})\\s+(beats|steps)\\s*->\\s*' + ACTION_PATTERN + '\\s+(-?[0-9]+(?:\\.[0-9]+)?)$', '');
 
   static var commands:Array<FunkPulseCommand> = [];
   static var loadedScripts:Map<String, Bool> = new Map();
+  static var visuals:Map<String, FlxSprite> = new Map();
+  static var texts:Map<String, FlxText> = new Map();
+  static var visualCount:Int = 0;
 
   public static function reload(modDirs:Array<String>, modRoot:String):Void
   {
     commands = [];
     loadedScripts = new Map();
+    clearVisuals();
 
     #if sys
     if (!sys.FileSystem.exists(modRoot)) return;
@@ -126,6 +141,8 @@ class FunkPulseRuntime
 
     var state:Null<PlayState> = PlayState.instance;
     if (state == null) return;
+
+    if (trigger == 'onSongEnd' || trigger == 'onDestroy' || trigger == 'onSongRetry') clearVisuals();
 
     // A runFile command may append commands while dispatching. Iterate over a snapshot
     // so the newly loaded file starts on the next matching event, not mid-dispatch.
@@ -246,7 +263,28 @@ class FunkPulseRuntime
           trace('[FunkPulse] Command limit reached; remaining directives were ignored.');
           return;
         }
-        commands.push({trigger: trigger, index: parsedIndex, action: action, value: value, source: '$sourceName:$lineNumber', filePath: '', packRoot: packRoot, repeatRemaining: repeatRemaining});
+        commands.push({trigger: trigger, index: parsedIndex, action: action, value: value, source: '$sourceName:$lineNumber', filePath: '', packRoot: packRoot, repeatRemaining: repeatRemaining, args: []});
+        added++;
+        continue;
+      }
+
+      if (ADVANCED_PATTERN.match(line))
+      {
+        var advancedTrigger:String = normalizeTrigger(ADVANCED_PATTERN.matched(1));
+        var advancedRawIndex:Null<String> = ADVANCED_PATTERN.matched(2);
+        var advancedIndex:Null<Int> = advancedRawIndex == null || advancedRawIndex == '' ? -1 : Std.parseInt(advancedRawIndex);
+        var advancedAction:String = ADVANCED_PATTERN.matched(3);
+        var advancedRawArgs:Null<String> = ADVANCED_PATTERN.matched(4);
+        var advancedArgs:Array<String> = parseAdvancedArgs(advancedAction, advancedRawArgs == null ? '' : advancedRawArgs);
+        if (!isValidAdvanced(advancedAction, advancedArgs) || advancedIndex == null || advancedIndex < -1 || advancedIndex > MAX_INDEX
+          || ((advancedTrigger == 'onBeatHit' || advancedTrigger == 'onStepHit') && advancedIndex < 0))
+        {
+          trace('[FunkPulse] $sourceName:$lineNumber: unsafe advanced directive; skipped.');
+          continue;
+        }
+        if (commands.length >= MAX_COMMANDS) return;
+        commands.push({trigger: advancedTrigger, index: advancedIndex, action: advancedAction, value: 0, args: advancedArgs,
+          source: '$sourceName:$lineNumber', filePath: '', packRoot: packRoot, repeatRemaining: -1});
         added++;
         continue;
       }
@@ -270,7 +308,7 @@ class FunkPulseRuntime
           trace('[FunkPulse] Command limit reached; remaining directives were ignored.');
           return;
         }
-        commands.push({trigger: trigger, index: parsedIndex, action: 'runFile', value: 0, source: '$sourceName:$lineNumber', filePath: filePath, packRoot: packRoot, repeatRemaining: -1});
+        commands.push({trigger: trigger, index: parsedIndex, action: 'runFile', value: 0, source: '$sourceName:$lineNumber', filePath: filePath, packRoot: packRoot, repeatRemaining: -1, args: []});
         added++;
         continue;
       }
@@ -313,7 +351,7 @@ class FunkPulseRuntime
         return;
       }
 
-      commands.push({trigger: trigger, index: parsedIndex, action: action, value: value, source: '$sourceName:$lineNumber', filePath: '', packRoot: packRoot, repeatRemaining: -1});
+      commands.push({trigger: trigger, index: parsedIndex, action: action, value: value, source: '$sourceName:$lineNumber', filePath: '', packRoot: packRoot, repeatRemaining: -1, args: []});
       added++;
     }
     trace('[FunkPulse] $sourceName: loaded $added command(s).');
@@ -374,6 +412,7 @@ class FunkPulseRuntime
   {
     switch (command.action)
     {
+      case 'tween', 'showImage', 'showText', 'setNote', 'removeVisual', 'clearVisuals': executeAdvanced(command, state);
       case 'runFile':
         loadScript(command.packRoot, command.filePath, '${command.source} -> ${command.filePath}');
       case 'game.zoom':
@@ -411,6 +450,114 @@ class FunkPulseRuntime
       case 'setHealth': state.health = command.value;
       default: trace('[FunkPulse] Unsupported action at ${command.source}.');
     }
+  }
+
+  static function parseAdvancedArgs(action:String, raw:String):Array<String>
+  {
+    if (action == 'showText')
+    {
+      var match:EReg = new EReg('^([^ ]+)\\s+(-?[0-9]+(?:\\.[0-9]+)?)\\s+(-?[0-9]+(?:\\.[0-9]+)?)\\s+([1-9][0-9]{0,2})\\s+"([^"]{0,256})"(?:\\s+(hud|game))?$', '');
+      if (match.match(raw)) return [match.matched(1), match.matched(2), match.matched(3), match.matched(4), match.matched(5), match.matched(6) ?? 'hud'];
+      return [];
+    }
+    return raw.split(' ').filter(function(part) return part.length > 0);
+  }
+
+  static function isValidAdvanced(action:String, args:Array<String>):Bool
+  {
+    if (action == 'clearVisuals') return args.length == 0;
+    if (action == 'removeVisual') return args.length == 1 && isSafeId(args[0]);
+    if (action == 'showImage')
+    {
+      if (args.length < 4 || args.length > 5 || !isSafeId(args[0]) || !isSafeAsset(args[1])) return false;
+      return isSafeFloat(args[2], -4096, 4096) && isSafeFloat(args[3], -4096, 4096) && (args.length == 4 || args[4] == 'hud' || args[4] == 'game');
+    }
+    if (action == 'showText')
+      return args.length == 6 && isSafeId(args[0]) && isSafeFloat(args[1], -4096, 4096) && isSafeFloat(args[2], -4096, 4096)
+        && isSafeFloat(args[3], 1, 256) && (args[5] == 'hud' || args[5] == 'game');
+    if (action == 'setNote') return args.length == 4 && isSafeSide(args[0]) && isSafeInt(args[1], 0, 3)
+      && isSafeNoteProperty(args[2]) && isSafeFloat(args[3], -4096, 4096);
+    if (action == 'tween') return args.length >= 4 && args.length <= 5 && isSafeTarget(args[0]) && isSafeTweenProperty(args[1])
+      && isSafeFloat(args[2], -4096, 4096) && isSafeFloat(args[3], 0.01, 10) && (args.length == 4 || isSafeEase(args[4]));
+    return false;
+  }
+
+  static function isSafeId(value:String):Bool return value.length > 0 && value.length <= 32 && ~/^[A-Za-z0-9_-]+$/.match(value);
+  static function isSafeAsset(value:String):Bool return value.length > 0 && value.length <= 128 && value.indexOf('..') < 0 && value.indexOf('\\') < 0 && !StringTools.startsWith(value, '/') && ~/^[A-Za-z0-9_/-]+$/.match(value);
+  static function isSafeSide(value:String):Bool return value == 'player' || value == 'opponent';
+  static function isSafeFloat(value:String, min:Float, max:Float):Bool { var n:Float = Std.parseFloat(value); return !Math.isNaN(n) && n >= min && n <= max; }
+  static function isSafeInt(value:String, min:Int, max:Int):Bool { var n:Null<Int> = Std.parseInt(value); return n != null && n >= min && n <= max && value == Std.string(n); }
+  static function isSafeNoteProperty(value:String):Bool return value == 'x' || value == 'yOffset' || value == 'alpha' || value == 'angle' || value == 'scale';
+  static function isSafeTweenProperty(value:String):Bool return value == 'x' || value == 'y' || value == 'alpha' || value == 'angle' || value == 'scale' || value == 'scaleX' || value == 'scaleY';
+  static function isSafeEase(value:String):Bool return value == 'linear' || value == 'quadIn' || value == 'quadOut' || value == 'quadInOut' || value == 'sineIn' || value == 'sineOut' || value == 'cubeIn' || value == 'cubeOut';
+  static function isSafeTarget(value:String):Bool return (StringTools.startsWith(value, 'image:') || StringTools.startsWith(value, 'text:') || StringTools.startsWith(value, 'note:')) && isSafeId(value.substr(value.indexOf(':') + 1).split(':')[0]);
+
+  static function executeAdvanced(command:FunkPulseCommand, state:PlayState):Void
+  {
+    var a:Array<String> = command.args;
+    switch (command.action)
+    {
+      case 'clearVisuals': clearVisuals();
+      case 'removeVisual': removeVisual(a[0], state);
+      case 'showImage':
+        if (visualCount >= 64 || !Assets.exists(Paths.image(a[1]))) return;
+        removeVisual(a[0], state);
+        var image:FunkinSprite = FunkinSprite.create(Std.parseFloat(a[2]), Std.parseFloat(a[3]), a[1]);
+        image.cameras = [a.length == 5 && a[4] == 'game' ? state.camGame : state.camHUD];
+        state.add(image); visuals.set(a[0], image); visualCount++;
+      case 'showText':
+        if (visualCount >= 64) return;
+        removeVisual(a[0], state);
+        var text:FlxText = new FlxText(Std.parseFloat(a[1]), Std.parseFloat(a[2]), 0, a[4], Std.parseInt(a[3]));
+        text.cameras = [a[5] == 'game' ? state.camGame : state.camHUD];
+        state.add(text); texts.set(a[0], text); visualCount++;
+      case 'setNote':
+        var note:Null<NoteSprite> = findNote(state, a[0], Std.parseInt(a[1]));
+        if (note != null) setTargetProperty(note, a[2], Std.parseFloat(a[3]));
+      case 'tween':
+        var target:Dynamic = findTarget(state, a[0]);
+        if (target != null) tweenTarget(target, a[1], Std.parseFloat(a[2]), Std.parseFloat(a[3]), a.length == 5 ? a[4] : 'linear');
+    }
+  }
+
+  static function findNote(state:PlayState, side:String, index:Int):Null<NoteSprite>
+  {
+    var group = side == 'player' ? state.playerStrumline.notes : state.opponentStrumline.notes;
+    return index >= 0 && index < group.members.length ? group.members[index] : null;
+  }
+
+  static function findTarget(state:PlayState, target:String):Dynamic
+  {
+    var parts:Array<String> = target.split(':');
+    if (parts[0] == 'image') return visuals.get(parts[1]);
+    if (parts[0] == 'text') return texts.get(parts[1]);
+    if (parts[0] == 'note' && parts.length == 3 && isSafeSide(parts[1])) return findNote(state, parts[1], Std.parseInt(parts[2]));
+    return null;
+  }
+
+  static function setTargetProperty(target:Dynamic, property:String, value:Float):Void
+  {
+    switch (property) { case 'x': target.x = value; case 'y': target.y = value; case 'yOffset': target.yOffset = value; case 'alpha': target.alpha = value; case 'angle': target.angle = value; case 'scale': target.scale.set(value, value); }
+  }
+
+  static function tweenTarget(target:Dynamic, property:String, value:Float, duration:Float, easeName:String):Void
+  {
+    var props:Dynamic = {}; switch (property) { case 'x': props.x = value; case 'y': props.y = value; case 'alpha': props.alpha = value; case 'angle': props.angle = value; case 'scale': props['scale.x'] = value; props['scale.y'] = value; case 'scaleX': props['scale.x'] = value; case 'scaleY': props['scale.y'] = value; }
+    FlxTween.tween(target, props, duration, {ease: easeFor(easeName)});
+  }
+
+  static function easeFor(name:String):Float->Float return switch (name) { case 'quadIn': FlxEase.quadIn; case 'quadOut': FlxEase.quadOut; case 'quadInOut': FlxEase.quadInOut; case 'sineIn': FlxEase.sineIn; case 'sineOut': FlxEase.sineOut; case 'cubeIn': FlxEase.cubeIn; case 'cubeOut': FlxEase.cubeOut; default: FlxEase.linear; };
+
+  static function removeVisual(id:String, state:PlayState):Void
+  {
+    var image:Null<FlxSprite> = visuals.get(id); if (image != null) { state.remove(image, true); image.destroy(); visuals.remove(id); visualCount--; }
+    var text:Null<FlxText> = texts.get(id); if (text != null) { state.remove(text, true); text.destroy(); texts.remove(id); visualCount--; }
+  }
+
+  static function clearVisuals():Void
+  {
+    var state:Null<PlayState> = PlayState.instance; if (state != null) { for (image in visuals) { state.remove(image, true); image.destroy(); } for (text in texts) { state.remove(text, true); text.destroy(); } }
+    visuals = new Map(); texts = new Map(); visualCount = 0;
   }
 
   static function emitSongEvent(kind:String, value:Dynamic, source:String):Void
