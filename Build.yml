@@ -1,0 +1,138 @@
+name: Build Windows, macOS DMG, and HTML5
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Windows EXE
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: "4.3.7"
+
+      - name: Install HMM
+        shell: pwsh
+        run: |
+          haxelib setup "$env:USERPROFILE\haxelib"
+          haxelib --global install hmm
+          haxelib --global run hmm setup
+          haxelib run hmm install
+
+      - name: Build Windows release
+        shell: pwsh
+        run: haxelib run lime build windows -release
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnknownEngine-Windows
+          path: export/release/windows/bin/
+          if-no-files-found: error
+          retention-days: 14
+
+  build-macos:
+    name: macOS DMG
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: "4.3.7"
+
+      - name: Install HMM
+        shell: bash
+        run: |
+          haxelib setup "$HOME/haxelib"
+          haxelib --global install hmm
+          haxelib --global run hmm setup
+          haxelib run hmm install
+
+      - name: Build macOS release
+        shell: bash
+        run: haxelib run lime build mac -release
+
+      - name: Package app as DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find export/release/macos/bin -maxdepth 3 -type d -name '*.app' -print -quit)"
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app bundle was produced under export/release/macos/bin."
+            echo "Inspect the build log and the output directory before changing this workflow."
+            find export/release/macos/bin -maxdepth 3 -print || true
+            exit 1
+          fi
+          mkdir -p export/release/macos/package
+          hdiutil create \
+            -volname "Funkin" \
+            -srcfolder "$APP_PATH" \
+            -ov \
+            -format UDZO \
+            "export/release/macos/package/Funkin-macOS.dmg"
+
+      - name: Upload macOS app and DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnknownEngine-macOS
+          path: |
+            export/release/macos/bin/
+            export/release/macos/package/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  build-html5:
+    name: HTML5
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: "4.3.7"
+
+      - name: Install HMM
+        shell: bash
+        run: |
+          haxelib setup "$HOME/haxelib"
+          haxelib --global install hmm
+          haxelib --global run hmm setup
+          haxelib run hmm install
+
+      - name: Build HTML5 release
+        shell: bash
+        run: haxelib run lime build html5 -release
+
+      - name: Upload HTML5 build
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnknownEngine-HTML5
+          path: export/release/html5/bin/
+          if-no-files-found: error
+          retention-days: 14
