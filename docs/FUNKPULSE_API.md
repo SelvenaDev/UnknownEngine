@@ -216,3 +216,35 @@ onSongEnd -> clearVisuals
 - `removeVisual ID` / `clearVisuals` — 演出を破棄
 
 対象プロパティは位置、透明度、角度、倍率、ノーツの`yOffset`に限定されています。秒数は0.01〜10秒、位置は-4096〜4096、ノーツの方向インデックスは0〜3です。曲終了・リトライ・state破棄時にも演出は自動的に破棄されます。
+
+## 音声・動画命令
+
+音声はIDごとに管理され、最大32個まで同時に保持できます。音量は0〜1、外部URL・絶対パス・`..`を含むパスは拒否されます。
+
+```text
+onSongStart -> playSound intro ui/intro 0.8 once
+onBeatHit 4 -> playSound loop ambience 0.25 loop
+onBeatHit 16 -> tweenSound loop volume 0 1.0
+onBeatHit 20 -> pauseSound loop
+onBeatHit 24 -> stopSound loop
+```
+
+- `playSound ID ASSET VOLUME [once|loop]`
+- `pauseSound ID`
+- `stopSound ID`
+- `tweenSound ID volume VOLUME SECONDS`
+
+動画は安全なゲーム内動画アセットだけを対象に、現在のカットシーン動画を操作します。
+
+```text
+onSongStart -> playVideo cutscenes/intro
+onBeatHit 32 -> pauseVideo
+onBeatHit 40 -> playVideo cutscenes/intro
+onSongEnd -> stopVideo
+```
+
+- `playVideo ASSET`
+- `pauseVideo`
+- `stopVideo`
+
+動画再生はビルド時に動画再生機能と`hxvlc`が有効なネイティブターゲットで利用できます。HTML5では既存の動画再生バックエンドの対応状況に依存します。曲終了・リトライ・State破棄時には音声と動画を自動停止します。

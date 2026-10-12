@@ -9,6 +9,8 @@ import funkin.Conductor;
 import funkin.data.event.SongEventRegistry;
 import funkin.data.song.SongData.SongEventData;
 import funkin.play.PlayState;
+import funkin.audio.FunkinSound;
+import funkin.play.cutscene.VideoCutscene;
 import funkin.graphics.FunkinSprite;
 import funkin.play.notes.NoteSprite;
 import flixel.FlxSprite;
@@ -61,7 +63,7 @@ class FunkPulseRuntime
     ''
   );
   static final ACTION_PATTERN:String = '(game\\.zoom|hud\\.zoom|health\\.add|setProperty\\s+(?:camGame\\.zoom|camHUD\\.zoom|PlayState\\.instance\\.camGame\\.zoom|PlayState\\.instance\\.camHUD\\.zoom|health|PlayState\\.instance\\.health|currentCameraZoom|defaultHUDCameraZoom|playbackRate|instrumentalVolume|playerVocalsVolume|opponentVocalsVolume|cameraBopIntensity|hudCameraZoomIntensity|cameraZoomRate|cameraZoomRateOffset)|addHealth|setHealth|cameraZoom|hudZoom|setCameraZoom|setHudZoom|setScrollSpeed|setPlayerScrollSpeed|setOpponentScrollSpeed|setCameraBop|emit\\.(?:ZoomCamera|ScrollSpeed|SetCameraBop|SetTargetBopSpeed|FocusCamera))';
-  static final ADVANCED_PATTERN:EReg = new EReg('^(beat|step|onCreate|onStateCreate|onDestroy|onAdd|onUpdate|onPause|onResume|onSongStart|onSongEnd|onGameOver|onNoteIncoming|onNoteHit|onNoteMiss|onNoteHoldDrop|onNoteGhostMiss|onStepHit|onBeatHit|onSongEvent|onCountdownStart|onCountdownStep|onCountdownEnd|onSongLoaded|onSongRetry|onStateChangeBegin|onStateChangeEnd|onSubStateOpenBegin|onSubStateOpenEnd|onSubStateCloseBegin|onSubStateCloseEnd|onFocusGained|onFocusLost|onCapsuleSelected|onDifficultySwitch|onSongSelected|onFreeplayIntroDone|onFreeplayOutro|onFreeplayClose|onCharacterSelect|onCharacterDeselect|onCharacterConfirm|onDialogueStart|onDialogueLine|onDialogueCompleteLine|onDialogueSkip|onDialogueEnd)(?:\\s+([0-9]+))?\\s*->\\s*(tween|showImage|showText|setNote|removeVisual|clearVisuals)(?:\\s+(.+))?$', '');
+  static final ADVANCED_PATTERN:EReg = new EReg('^(beat|step|onCreate|onStateCreate|onDestroy|onAdd|onUpdate|onPause|onResume|onSongStart|onSongEnd|onGameOver|onNoteIncoming|onNoteHit|onNoteMiss|onNoteHoldDrop|onNoteGhostMiss|onStepHit|onBeatHit|onSongEvent|onCountdownStart|onCountdownStep|onCountdownEnd|onSongLoaded|onSongRetry|onStateChangeBegin|onStateChangeEnd|onSubStateOpenBegin|onSubStateOpenEnd|onSubStateCloseBegin|onSubStateCloseEnd|onFocusGained|onFocusLost|onCapsuleSelected|onDifficultySwitch|onSongSelected|onFreeplayIntroDone|onFreeplayOutro|onFreeplayClose|onCharacterSelect|onCharacterDeselect|onCharacterConfirm|onDialogueStart|onDialogueLine|onDialogueCompleteLine|onDialogueSkip|onDialogueEnd)(?:\\s+([0-9]+))?\\s*->\\s*(tween|showImage|showText|setNote|removeVisual|clearVisuals|playSound|pauseSound|stopSound|tweenSound|playVideo|pauseVideo|stopVideo)(?:\\s+(.+))?$', '');
   static final EVERY_PATTERN:EReg = new EReg('^(everyBeat|everyStep)\\s*->\\s*' + ACTION_PATTERN + '\\s+(-?[0-9]+(?:\\.[0-9]+)?)$', '');
   static final REPEAT_PATTERN:EReg = new EReg('^repeat\\s+([1-9][0-9]{0,3})\\s+(everyBeat|everyStep)\\s*->\\s*' + ACTION_PATTERN + '\\s+(-?[0-9]+(?:\\.[0-9]+)?)$', '');
   static final WAIT_PATTERN:EReg = new EReg('^wait\\s+([1-9][0-9]{0,3})\\s+(beats|steps)\\s*->\\s*' + ACTION_PATTERN + '\\s+(-?[0-9]+(?:\\.[0-9]+)?)$', '');
@@ -71,12 +73,16 @@ class FunkPulseRuntime
   static var visuals:Map<String, FlxSprite> = new Map();
   static var texts:Map<String, FlxText> = new Map();
   static var visualCount:Int = 0;
+  static var sounds:Map<String, FunkinSound> = new Map();
+  static var videoPlaying:Bool = false;
+  static var mediaCount:Int = 0;
 
   public static function reload(modDirs:Array<String>, modRoot:String):Void
   {
     commands = [];
     loadedScripts = new Map();
     clearVisuals();
+    clearMedia();
 
     #if sys
     if (!sys.FileSystem.exists(modRoot)) return;
@@ -142,7 +148,7 @@ class FunkPulseRuntime
     var state:Null<PlayState> = PlayState.instance;
     if (state == null) return;
 
-    if (trigger == 'onSongEnd' || trigger == 'onDestroy' || trigger == 'onSongRetry') clearVisuals();
+    if (trigger == 'onSongEnd' || trigger == 'onDestroy' || trigger == 'onSongRetry') { clearVisuals(); clearMedia(); }
 
     // A runFile command may append commands while dispatching. Iterate over a snapshot
     // so the newly loaded file starts on the next matching event, not mid-dispatch.
@@ -412,7 +418,7 @@ class FunkPulseRuntime
   {
     switch (command.action)
     {
-      case 'tween', 'showImage', 'showText', 'setNote', 'removeVisual', 'clearVisuals': executeAdvanced(command, state);
+      case 'tween', 'showImage', 'showText', 'setNote', 'removeVisual', 'clearVisuals', 'playSound', 'pauseSound', 'stopSound', 'tweenSound', 'playVideo', 'pauseVideo', 'stopVideo': executeAdvanced(command, state);
       case 'runFile':
         loadScript(command.packRoot, command.filePath, '${command.source} -> ${command.filePath}');
       case 'game.zoom':
@@ -466,6 +472,13 @@ class FunkPulseRuntime
   static function isValidAdvanced(action:String, args:Array<String>):Bool
   {
     if (action == 'clearVisuals') return args.length == 0;
+    if (action == 'playVideo') return args.length == 1 && isSafeAsset(args[0]);
+    if (action == 'pauseVideo' || action == 'stopVideo') return args.length == 0;
+    if (action == 'playSound') return args.length >= 3 && args.length <= 4 && isSafeId(args[0]) && isSafeAsset(args[1])
+      && isSafeFloat(args[2], 0, 1) && (args.length == 3 || args[3] == 'loop' || args[3] == 'once');
+    if (action == 'pauseSound' || action == 'stopSound') return args.length == 1 && isSafeId(args[0]);
+    if (action == 'tweenSound') return args.length == 4 && isSafeId(args[0]) && args[1] == 'volume'
+      && isSafeFloat(args[2], 0, 1) && isSafeFloat(args[3], 0.01, 10);
     if (action == 'removeVisual') return args.length == 1 && isSafeId(args[0]);
     if (action == 'showImage')
     {
@@ -498,6 +511,18 @@ class FunkPulseRuntime
     switch (command.action)
     {
       case 'clearVisuals': clearVisuals();
+      case 'playSound': playSound(a);
+      case 'pauseSound': pauseSound(a[0]);
+      case 'stopSound': stopSound(a[0]);
+      case 'tweenSound':
+        var sound:Null<FunkinSound> = sounds.get(a[0]);
+        if (sound != null) FlxTween.tween(sound, {volume: Std.parseFloat(a[2])}, Std.parseFloat(a[3]));
+      case 'playVideo':
+        if (!videoPlaying) { VideoCutscene.play(Paths.videos(a[0])); videoPlaying = true; mediaCount++; }
+      case 'pauseVideo':
+        if (videoPlaying) VideoCutscene.pauseVideo();
+      case 'stopVideo':
+        if (videoPlaying) { VideoCutscene.finishVideo(); videoPlaying = false; if (mediaCount > 0) mediaCount--; }
       case 'removeVisual': removeVisual(a[0], state);
       case 'showImage':
         if (visualCount >= 64 || !Assets.exists(Paths.image(a[1]))) return;
@@ -548,6 +573,29 @@ class FunkPulseRuntime
 
   static function easeFor(name:String):Float->Float return switch (name) { case 'quadIn': FlxEase.quadIn; case 'quadOut': FlxEase.quadOut; case 'quadInOut': FlxEase.quadInOut; case 'sineIn': FlxEase.sineIn; case 'sineOut': FlxEase.sineOut; case 'cubeIn': FlxEase.cubeIn; case 'cubeOut': FlxEase.cubeOut; default: FlxEase.linear; };
 
+  static function playSound(args:Array<String>):Void
+  {
+    if (mediaCount >= 32) return;
+    stopSound(args[0]);
+    var looped:Bool = args.length == 4 && args[3] == 'loop';
+    var loaded:Null<FunkinSound> = looped
+      ? FunkinSound.load(Paths.sound(args[1]), Std.parseFloat(args[2]), true, false, true)
+      : FunkinSound.playOnce(Paths.sound(args[1]), Std.parseFloat(args[2]));
+    if (loaded != null) { sounds.set(args[0], loaded); mediaCount++; }
+  }
+
+  static function pauseSound(id:String):Void
+  {
+    var sound:Null<FunkinSound> = sounds.get(id);
+    if (sound != null) sound.pause();
+  }
+
+  static function stopSound(id:String):Void
+  {
+    var sound:Null<FunkinSound> = sounds.get(id);
+    if (sound != null) { sound.stop(); sound.destroy(); sounds.remove(id); if (mediaCount > 0) mediaCount--; }
+  }
+
   static function removeVisual(id:String, state:PlayState):Void
   {
     var image:Null<FlxSprite> = visuals.get(id); if (image != null) { state.remove(image, true); image.destroy(); visuals.remove(id); visualCount--; }
@@ -558,6 +606,15 @@ class FunkPulseRuntime
   {
     var state:Null<PlayState> = PlayState.instance; if (state != null) { for (image in visuals) { state.remove(image, true); image.destroy(); } for (text in texts) { state.remove(text, true); text.destroy(); } }
     visuals = new Map(); texts = new Map(); visualCount = 0;
+  }
+
+  static function clearMedia():Void
+  {
+    var soundIds:Array<String> = [for (id in sounds.keys()) id];
+    for (id in soundIds) stopSound(id);
+    if (videoPlaying) VideoCutscene.finishVideo();
+    videoPlaying = false;
+    mediaCount = 0;
   }
 
   static function emitSongEvent(kind:String, value:Dynamic, source:String):Void
