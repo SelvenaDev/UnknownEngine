@@ -1,0 +1,19 @@
+# FunkPulse v1 — official-style callback/property aliases.
+# Beat and step indices are zero-based.
+
+onBeatHit 0 -> setProperty camGame.zoom 1.05
+onBeatHit 1 -> setProperty camGame.zoom 1.00
+onStepHit 16 -> setProperty camHUD.zoom 1.03
+onStepHit 17 -> setProperty camHUD.zoom 1.00
+onBeatHit 8 -> addHealth 0.05
+onSongStart -> setProperty playbackRate 1.00
+onSongStart -> run logic/extra.pulse
+onNoteHit -> addHealth 0.01
+onBeatHit 16 -> emit.ZoomCamera 1.10
+onBeatHit 20 -> emit.SetCameraBop 2.00
+onBeatHit 24 -> setScrollSpeed 1.25
+
+# Legacy aliases remain valid:
+# beat 16 -> game.zoom 1.00
+# step 32 -> hud.zoom 1.00
+# beat 24 -> health.add -0.05

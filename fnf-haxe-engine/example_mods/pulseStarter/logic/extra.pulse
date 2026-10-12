@@ -1,0 +1,3 @@
+# This file is loaded by main.pulse when the song starts.
+onBeatHit 48 -> setProperty camGame.zoom 1.08
+onBeatHit 64 -> setProperty camGame.zoom 1.00

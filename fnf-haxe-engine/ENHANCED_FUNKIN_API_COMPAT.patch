@@ -1,0 +1,678 @@
+--- a/source/funkin/modding/FunkPulseRuntime.hx
++++ b/source/funkin/modding/FunkPulseRuntime.hx
+@@ -1,10 +1,13 @@
+ package funkin.modding;
+ 
+-// Added in the Enhanced Funkin fork: a small, non-HScript mod scripting runtime.
++// Enhanced Funkin fork: a safe declarative bridge for official-style mod commands.
+ 
+ import funkin.modding.events.ScriptEvent;
+ import funkin.modding.events.ScriptEvent.SongTimeScriptEvent;
+ import funkin.modding.events.ScriptEventType;
++import funkin.Conductor;
++import funkin.data.event.SongEventRegistry;
++import funkin.data.song.SongData.SongEventData;
+ import funkin.play.PlayState;
+ 
+ private typedef FunkPulseCommand =
+@@ -17,26 +20,32 @@
+ }
+ 
+ /**
+- * Loads the Enhanced Funkin Pulse format. Pulse is deliberately declarative:
+- * it has no eval, filesystem, reflection, or arbitrary HScript access.
++ * Loads the Enhanced Funkin Pulse format.
++ *
++ * Pulse is deliberately declarative. It does not evaluate Haxe/HScript, access
++ * arbitrary files, use reflection, or expose loops. The command names mirror
++ * the official ScriptEvent callback names and common PlayState properties so
++ * simple mods can be written without a custom Haxe class.
++ *
++ * Examples:
++ *   onBeatHit 0 -> setProperty camGame.zoom 1.05
++ *   onStepHit 16 -> setProperty camHUD.zoom 1.03
++ *   onNoteHit -> addHealth 0.05
++ *   onSongStart -> setProperty playbackRate 1.1
+  */
+ class FunkPulseRuntime
+ {
+   public static final FORMAT:String = 'funk-pulse/v1';
+   static final MAX_SCRIPT_BYTES:Int = 131072;
+-  static final MAX_COMMANDS:Int = 512;
++  static final MAX_COMMANDS:Int = 1024;
++  static final MAX_INDEX:Int = 100000;
+   static final COMMAND_PATTERN:EReg = new EReg(
+-    '^(beat|step)\\s+([0-9]+)\\s*->\\s*(game\\.zoom|hud\\.zoom|health\\.add)\\s+(-?[0-9]+(\\.[0-9]+)?)$',
++    '^(beat|step|onCreate|onStateCreate|onDestroy|onAdd|onUpdate|onPause|onResume|onSongStart|onSongEnd|onGameOver|onNoteIncoming|onNoteHit|onNoteMiss|onNoteHoldDrop|onNoteGhostMiss|onStepHit|onBeatHit|onSongEvent|onCountdownStart|onCountdownStep|onCountdownEnd|onSongLoaded|onSongRetry|onStateChangeBegin|onStateChangeEnd|onSubStateOpenBegin|onSubStateOpenEnd|onSubStateCloseBegin|onSubStateCloseEnd|onFocusGained|onFocusLost|onCapsuleSelected|onDifficultySwitch|onSongSelected|onFreeplayIntroDone|onFreeplayOutro|onFreeplayClose|onCharacterSelect|onCharacterDeselect|onCharacterConfirm|onDialogueStart|onDialogueLine|onDialogueCompleteLine|onDialogueSkip|onDialogueEnd)(?:\\s+([0-9]+))?\\s*->\\s*(game\\.zoom|hud\\.zoom|health\\.add|setProperty\\s+(?:camGame\\.zoom|camHUD\\.zoom|PlayState\\.instance\\.camGame\\.zoom|PlayState\\.instance\\.camHUD\\.zoom|health|PlayState\\.instance\\.health|currentCameraZoom|defaultHUDCameraZoom|playbackRate|instrumentalVolume|playerVocalsVolume|opponentVocalsVolume|cameraBopIntensity|hudCameraZoomIntensity|cameraZoomRate|cameraZoomRateOffset)|addHealth|setHealth|cameraZoom|hudZoom|setCameraZoom|setHudZoom|setScrollSpeed|setPlayerScrollSpeed|setOpponentScrollSpeed|setCameraBop|emit\\.(?:ZoomCamera|ScrollSpeed|SetCameraBop|SetTargetBopSpeed|FocusCamera))\\s+(-?[0-9]+(?:\\.[0-9]+)?)$',
+     ''
+   );
+ 
+   static var commands:Array<FunkPulseCommand> = [];
+ 
+-  /**
+-   * Reloads the Pulse scripts for the currently enabled Polymod directory list.
+-   * A Pulse pack remains selectable using the normal Mod Menu because its folder
+-   * also contains Polymod metadata; its own manifest and logic use the new layout.
+-   */
+   public static function reload(modDirs:Array<String>, modRoot:String):Void
+   {
+     commands = [];
+@@ -47,7 +56,6 @@
+     for (modDir in modDirs)
+     {
+       if (!isSafeSegment(modDir)) continue;
+-
+       var packRoot:String = '$modRoot/$modDir';
+       var manifestPath:String = '$packRoot/pulse.json';
+       if (!sys.FileSystem.exists(manifestPath)) continue;
+@@ -58,7 +66,6 @@
+         var format:Dynamic = Reflect.field(manifest, 'format');
+         var id:Dynamic = Reflect.field(manifest, 'id');
+         var entry:Dynamic = Reflect.field(manifest, 'entry');
+-
+         if (format != FORMAT || id != modDir || !Std.isOfType(entry, String))
+         {
+           trace('[FunkPulse] Ignoring invalid manifest: $manifestPath');
+@@ -85,7 +92,6 @@
+           trace('[FunkPulse] Script is too large and was ignored: $scriptPath');
+           continue;
+         }
+-
+         parseScript(source, '$modDir/$scriptEntry');
+       }
+       catch (error:Dynamic)
+@@ -93,32 +99,30 @@
+         trace('[FunkPulse] Failed to load $manifestPath: $error');
+       }
+     }
+-
+     trace('[FunkPulse] Loaded ${commands.length} command(s) from enabled mods.');
+     #else
+     trace('[FunkPulse] Pulse packs require a native target in this build.');
+     #end
+   }
+ 
+-  /** Execute any matching instruction when a song beat or step is dispatched. */
++  /** Execute instructions matching the current official ScriptEvent. */
+   public static function dispatch(event:ScriptEvent):Void
+   {
+     if (event == null || !event.shouldPropagate || event.eventCanceled || commands.length == 0) return;
+ 
+-    var trigger:String;
+-    var index:Int;
++    var trigger:String = eventTrigger(event);
++    if (trigger == '') return;
++
++    var index:Int = -1;
+     switch (event.type)
+     {
+       case ScriptEventType.SONG_BEAT_HIT:
+-        var timeEvent:SongTimeScriptEvent = cast event;
+-        trigger = 'beat';
+-        index = timeEvent.beat;
++        var beatEvent:SongTimeScriptEvent = cast event;
++        index = beatEvent.beat;
+       case ScriptEventType.SONG_STEP_HIT:
+-        var timeEvent:SongTimeScriptEvent = cast event;
+-        trigger = 'step';
+-        index = timeEvent.step;
++        var stepEvent:SongTimeScriptEvent = cast event;
++        index = stepEvent.step;
+       default:
+-        return;
+     }
+ 
+     var state:Null<PlayState> = PlayState.instance;
+@@ -126,10 +130,60 @@
+ 
+     for (command in commands)
+     {
+-      if (command.trigger == trigger && command.index == index)
+-      {
+-        execute(command, state);
+-      }
++      if (command.trigger == trigger && (command.index < 0 || command.index == index)) execute(command, state);
++    }
++  }
++
++  static function eventTrigger(event:ScriptEvent):String
++  {
++    return switch (event.type)
++    {
++      case ScriptEventType.CREATE: 'onCreate';
++      case ScriptEventType.STATE_CREATE: 'onStateCreate';
++      case ScriptEventType.DESTROY: 'onDestroy';
++      case ScriptEventType.ADDED: 'onAdd';
++      case ScriptEventType.UPDATE: 'onUpdate';
++      case ScriptEventType.PAUSE: 'onPause';
++      case ScriptEventType.RESUME: 'onResume';
++      case ScriptEventType.SONG_BEAT_HIT: 'onBeatHit';
++      case ScriptEventType.SONG_STEP_HIT: 'onStepHit';
++      case ScriptEventType.NOTE_INCOMING: 'onNoteIncoming';
++      case ScriptEventType.NOTE_HIT: 'onNoteHit';
++      case ScriptEventType.NOTE_MISS: 'onNoteMiss';
++      case ScriptEventType.NOTE_HOLD_DROP: 'onNoteHoldDrop';
++      case ScriptEventType.NOTE_GHOST_MISS: 'onNoteGhostMiss';
++      case ScriptEventType.SONG_EVENT: 'onSongEvent';
++      case ScriptEventType.SONG_START: 'onSongStart';
++      case ScriptEventType.SONG_END: 'onSongEnd';
++      case ScriptEventType.COUNTDOWN_START: 'onCountdownStart';
++      case ScriptEventType.COUNTDOWN_STEP: 'onCountdownStep';
++      case ScriptEventType.COUNTDOWN_END: 'onCountdownEnd';
++      case ScriptEventType.GAME_OVER: 'onGameOver';
++      case ScriptEventType.SONG_RETRY: 'onSongRetry';
++      case ScriptEventType.SONG_LOADED: 'onSongLoaded';
++      case ScriptEventType.STATE_CHANGE_BEGIN: 'onStateChangeBegin';
++      case ScriptEventType.STATE_CHANGE_END: 'onStateChangeEnd';
++      case ScriptEventType.SUBSTATE_OPEN_BEGIN: 'onSubStateOpenBegin';
++      case ScriptEventType.SUBSTATE_OPEN_END: 'onSubStateOpenEnd';
++      case ScriptEventType.SUBSTATE_CLOSE_BEGIN: 'onSubStateCloseBegin';
++      case ScriptEventType.SUBSTATE_CLOSE_END: 'onSubStateCloseEnd';
++      case ScriptEventType.FOCUS_GAINED: 'onFocusGained';
++      case ScriptEventType.FOCUS_LOST: 'onFocusLost';
++      case ScriptEventType.CAPSULE_SELECTED: 'onCapsuleSelected';
++      case ScriptEventType.DIFFICULTY_SWITCH: 'onDifficultySwitch';
++      case ScriptEventType.SONG_SELECTED: 'onSongSelected';
++      case ScriptEventType.FREEPLAY_INTRO: 'onFreeplayIntroDone';
++      case ScriptEventType.FREEPLAY_OUTRO: 'onFreeplayOutro';
++      case ScriptEventType.FREEPLAY_CLOSE: 'onFreeplayClose';
++      case ScriptEventType.CHARACTER_SELECTED: 'onCharacterSelect';
++      case ScriptEventType.CHARACTER_DESELECTED: 'onCharacterDeselect';
++      case ScriptEventType.CHARACTER_CONFIRMED: 'onCharacterConfirm';
++      case ScriptEventType.DIALOGUE_START: 'onDialogueStart';
++      case ScriptEventType.DIALOGUE_LINE: 'onDialogueLine';
++      case ScriptEventType.DIALOGUE_COMPLETE_LINE: 'onDialogueCompleteLine';
++      case ScriptEventType.DIALOGUE_SKIP: 'onDialogueSkip';
++      case ScriptEventType.DIALOGUE_END: 'onDialogueEnd';
++      default: '';
+     }
+   }
+ 
+@@ -137,12 +191,13 @@
+   {
+     var lineNumber:Int = 0;
+     var added:Int = 0;
+-
+     for (rawLine in source.split('\n'))
+     {
+       lineNumber++;
+       var line:String = StringTools.trim(rawLine);
+-      if (line.length == 0 || StringTools.startsWith(line, '#')) continue;
++      var commentIndex:Int = line.indexOf('#');
++      if (commentIndex >= 0) line = StringTools.trim(line.substr(0, commentIndex));
++      if (line.length == 0) continue;
+ 
+       if (!COMMAND_PATTERN.match(line))
+       {
+@@ -150,14 +205,17 @@
+         continue;
+       }
+ 
+-      var trigger:String = COMMAND_PATTERN.matched(1);
+-      var parsedIndex:Null<Int> = Std.parseInt(COMMAND_PATTERN.matched(2));
+-      var action:String = COMMAND_PATTERN.matched(3);
++      var rawTrigger:String = COMMAND_PATTERN.matched(1);
++      var trigger:String = normalizeTrigger(rawTrigger);
++      var rawIndex:Null<String> = COMMAND_PATTERN.matched(2);
++      var parsedIndex:Null<Int> = rawIndex == null || rawIndex == '' ? -1 : Std.parseInt(rawIndex);
++      var action:String = normalizeAction(COMMAND_PATTERN.matched(3));
+       var value:Float = Std.parseFloat(COMMAND_PATTERN.matched(4));
++      var indexedTrigger:Bool = trigger == 'onBeatHit' || trigger == 'onStepHit';
+ 
+-      if (parsedIndex == null || parsedIndex < 0 || parsedIndex > 100000 || Math.isNaN(value))
++      if (parsedIndex == null || parsedIndex < -1 || parsedIndex > MAX_INDEX || (indexedTrigger && parsedIndex < 0) || Math.isNaN(value))
+       {
+-        trace('[FunkPulse] $sourceName:$lineNumber: out-of-range value; skipped.');
++        trace('[FunkPulse] $sourceName:$lineNumber: invalid event index or value; skipped.');
+         continue;
+       }
+ 
+@@ -165,50 +223,126 @@
+       {
+         case 'game.zoom', 'hud.zoom': value >= 0.25 && value <= 2.5;
+         case 'health.add': value >= -2.0 && value <= 2.0;
+-        default: false;
+-      }
+-
++        case 'setHealth': value >= 0.0 && value <= 2.0;
++        default: isSafePropertyValue(action, value);
++      };
+       if (!validValue)
+       {
+         trace('[FunkPulse] $sourceName:$lineNumber: value outside the action limit; skipped.');
+         continue;
+       }
+-
+       if (commands.length >= MAX_COMMANDS)
+       {
+         trace('[FunkPulse] Command limit reached; remaining directives were ignored.');
+         return;
+       }
+ 
+-      commands.push({
+-        trigger: trigger,
+-        index: parsedIndex,
+-        action: action,
+-        value: value,
+-        source: '$sourceName:$lineNumber'
+-      });
++      commands.push({trigger: trigger, index: parsedIndex, action: action, value: value, source: '$sourceName:$lineNumber'});
+       added++;
+     }
+-
+     trace('[FunkPulse] $sourceName: loaded $added command(s).');
+   }
+ 
++  static function normalizeTrigger(trigger:String):String
++  {
++    return switch (trigger)
++    {
++      case 'beat', 'onBeatHit': 'onBeatHit';
++      case 'step', 'onStepHit': 'onStepHit';
++      default: trigger;
++    }
++  }
++
++  static function normalizeAction(action:String):String
++  {
++    return switch (action)
++    {
++      case 'setProperty camGame.zoom', 'setProperty PlayState.instance.camGame.zoom': 'game.zoom';
++      case 'setProperty camHUD.zoom', 'setProperty PlayState.instance.camHUD.zoom': 'hud.zoom';
++      case 'setProperty PlayState.instance.health': 'health';
++      case 'addHealth': 'health.add';
++      case 'cameraZoom': 'game.zoom';
++      case 'hudZoom': 'hud.zoom';
++      case 'setCameraZoom': 'game.zoom';
++      case 'setHudZoom': 'hud.zoom';
++      case 'setScrollSpeed': 'scrollSpeed';
++      case 'setPlayerScrollSpeed': 'playerScrollSpeed';
++      case 'setOpponentScrollSpeed': 'opponentScrollSpeed';
++      case 'setCameraBop': 'cameraBopIntensity';
++      default:
++        if (StringTools.startsWith(action, 'setProperty ')) action.substr('setProperty '.length) else action;
++    }
++  }
++
++  static function isSafePropertyValue(action:String, value:Float):Bool
++  {
++    return switch (action)
++    {
++      case 'health': value >= 0.0 && value <= 2.0;
++      case 'game.zoom', 'hud.zoom': value >= 0.25 && value <= 2.5;
++      case 'playbackRate': value > 0.0 && value <= 4.0;
++      case 'instrumentalVolume', 'playerVocalsVolume', 'opponentVocalsVolume': value >= 0.0 && value <= 1.0;
++      case 'cameraBopIntensity', 'hudCameraZoomIntensity', 'cameraZoomRate', 'cameraZoomRateOffset': value >= 0.0 && value <= 100.0;
++      case 'currentCameraZoom', 'defaultHUDCameraZoom': value >= 0.0 && value <= 2.5;
++      case 'scrollSpeed', 'playerScrollSpeed', 'opponentScrollSpeed': value >= 0.0 && value <= 10.0;
++      case 'emit.ZoomCamera': value >= 0.0 && value <= 2.5;
++      case 'emit.ScrollSpeed': value >= 0.0 && value <= 10.0;
++      case 'emit.SetCameraBop': value >= 0.0 && value <= 10.0;
++      case 'emit.SetTargetBopSpeed': value >= 0.0 && value <= 64.0;
++      case 'emit.FocusCamera': value >= 0.0 && value <= 2.0;
++      default: false;
++    }
++  }
++
+   static function execute(command:FunkPulseCommand, state:PlayState):Void
+   {
+     switch (command.action)
+     {
+       case 'game.zoom':
+         state.currentCameraZoom = command.value;
++        state.camGame.zoom = command.value;
+       case 'hud.zoom':
+         state.defaultHUDCameraZoom = command.value;
+         state.camHUD.zoom = command.value;
+       case 'health.add':
+         state.health = Math.max(0.0, Math.min(2.0, state.health + command.value));
+-      default:
+-        trace('[FunkPulse] Unsupported action at ${command.source}.');
++      case 'health':
++        state.health = command.value;
++      case 'currentCameraZoom':
++        state.currentCameraZoom = command.value;
++        state.camGame.zoom = command.value;
++      case 'defaultHUDCameraZoom':
++        state.defaultHUDCameraZoom = command.value;
++        state.camHUD.zoom = command.value;
++      case 'playbackRate': state.playbackRate = command.value;
++      case 'instrumentalVolume': state.instrumentalVolume = command.value;
++      case 'playerVocalsVolume': state.playerVocalsVolume = command.value;
++      case 'opponentVocalsVolume': state.opponentVocalsVolume = command.value;
++      case 'cameraBopIntensity': state.cameraBopIntensity = command.value;
++      case 'hudCameraZoomIntensity': state.hudCameraZoomIntensity = command.value;
++      case 'cameraZoomRate': state.cameraZoomRate = command.value;
++      case 'cameraZoomRateOffset': state.cameraZoomRateOffset = command.value;
++      case 'scrollSpeed': state.tweenScrollSpeed(command.value, 0, null, ['playerStrumline', 'opponentStrumline']);
++      case 'playerScrollSpeed': state.tweenScrollSpeed(command.value, 0, null, ['playerStrumline']);
++      case 'opponentScrollSpeed': state.tweenScrollSpeed(command.value, 0, null, ['opponentStrumline']);
++      case 'emit.ZoomCamera': emitSongEvent('ZoomCamera', {zoom: command.value}, command.source);
++      case 'emit.ScrollSpeed': emitSongEvent('ScrollSpeed', {scroll: command.value}, command.source);
++      case 'emit.SetCameraBop': emitSongEvent('SetCameraBop', {intensity: command.value}, command.source);
++      case 'emit.SetTargetBopSpeed': emitSongEvent('SetTargetBopSpeed', {rate: Std.int(command.value)}, command.source);
++      case 'emit.FocusCamera': emitSongEvent('FocusCamera', {char: Std.int(command.value)}, command.source);
++      case 'setHealth': state.health = command.value;
++      default: trace('[FunkPulse] Unsupported action at ${command.source}.');
+     }
+   }
+ 
++  static function emitSongEvent(kind:String, value:Dynamic, source:String):Void
++  {
++    if (PlayState.instance == null || Conductor.instance == null) return;
++    var data:SongEventData = new SongEventData(Conductor.instance.songPosition, kind, value);
++    SongEventRegistry.handleEvent(data);
++    trace('[FunkPulse] Emitted $kind from $source.');
++  }
++
+   static function isSafeSegment(value:String):Bool
+   {
+     return value.length > 0 && value != '.' && value != '..' && ~/^[A-Za-z0-9_-]+$/.match(value);
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -15,7 +15,7 @@
+ ├── _polymod_meta.json  # Mod Menu互換用
+ ├── pulse.json          # FunkPulse manifest
+ └── logic/
+-    └── main.pulse      # 独自DSL
++    └── main.pulse      # 宣言型スクリプト
+ ```
+ 
+ `pulse.json` の最小例:
+@@ -30,17 +30,20 @@
+ }
+ ```
+ 
+-`.pulse` は任意コードを評価しないイベント指向の小さなDSLです。beat／step番号は0始まりで、利用できる命令はゲームカメラのズーム、HUDカメラのズーム、体力変化に限定しています。
++### 公式API互換エイリアス
++
++公式ドキュメントのHScriptは scripted class / module のイベントコールバックを中心に構成されています。この作業版のPulseは安全な限定DSLのまま、よく使うイベント名とプロパティ名を同じ考え方で書けるようにしました。
+ 
+ ```text
+-# 最初の拍で少し拡大、次の拍で元へ戻す
+-beat 0 -> game.zoom 1.05
+-beat 1 -> game.zoom 1.00
+-step 16 -> hud.zoom 1.03
+-beat 8 -> health.add -0.05
++onBeatHit 0 -> setProperty camGame.zoom 1.05
++onStepHit 16 -> setProperty camHUD.zoom 1.03
++onBeatHit 8 -> addHealth -0.05
++onBeatHit 24 -> setHealth 1.00
+ ```
+ 
+-ズーム値は0.25〜2.5、health変化量は-2〜2です。行頭 `#` はコメント、無効な命令はログを出して無視します。スクリプトサイズと命令数にも上限を設け、ファイルアクセス・reflection・eval・ループ・任意Haxe/HScript実行は提供しません。**現実装のFunkPulse実行はnative (`sys`) ビルド向け**です。HTML5ビルドでは既存のPolymod/HScriptが引き続き利用できます。
++`onBeatHit` は `SONG_BEAT_HIT`、`onStepHit` は `SONG_STEP_HIT` に対応します。`camGame.zoom`、`camHUD.zoom`、`health` は、それぞれゲームカメラ、HUDカメラ、`PlayState` の体力に対応します。従来の `beat` / `step`、`game.zoom` / `hud.zoom`、`health.add` も後方互換のため残しています。公式HScriptの任意コードを実行するものではないため、複雑な処理は従来のPolymod HScriptを利用してください。
++
++Pulseは任意コードを評価しないイベント指向の小さなDSLです。ズーム値は0.25〜2.5、体力は0〜2、体力変化量は-2〜2です。行頭または命令末尾の `#` はコメント、無効な命令はログを出して無視します。スクリプトサイズと命令数にも上限を設け、ファイルアクセス・reflection・eval・ループ・任意Haxe/HScript実行は提供しません。**現実装のFunkPulse実行はnative (`sys`) ビルド向け**です。HTML5ビルドでは既存のPolymod/HScriptが引き続き利用できます。
+ 
+ 動作例は `example_mods/pulseStarter/` にあります。このフォルダを `mods/` へコピーすると試せます。`pulse.json` の `id` とModフォルダ名を一致させてください。
+ 
+@@ -58,6 +61,8 @@
+ git checkout b2215482c
+ # ENHANCED_FUNKIN.patch をこのディレクトリへコピー
+ git apply ENHANCED_FUNKIN.patch
++# 今回の公式API互換拡張を追加する場合
++git apply ENHANCED_FUNKIN_API_COMPAT.patch
+ git submodule update --init --recursive
+ hmm install
+ haxelib run lime test html5
+@@ -69,4 +74,12 @@
+ 
+ FNFソースコードと既存の著作権表示は、同梱 `LICENSE.md` のApache License 2.0に従います。変更したHaxeファイルにはこのフォークでの改変表示を付けています。`Friday Night Funkin'` とロゴの商標は The Funkin' Crew Inc. に帰属し、この改変版は公式製品ではありません。アート、音楽、音声などはソースとは別ライセンスのため、この配布物に含めていません。
+ 
+-公式資料: [ソースコードとライセンス](https://github.com/FunkinCrew/Funkin/blob/main/LICENSE.md) · [アセットのライセンス](https://github.com/FunkinCrew/funkin.assets/blob/main/LICENSE.md) · [コンパイルガイド](https://github.com/FunkinCrew/Funkin/blob/main/docs/COMPILING.md)
++## 公式API互換の調査範囲
++
++公式Modding DocsのScripted Class / Scripted Module章と、同梱ソースの`ScriptEventType`、`IScriptedClass`、`Module`、`SongEvent`、`PlayState`を照合しました。Pulseは公式ディスパッチャが実際に処理する全ScriptEvent（生成、更新、曲、ノーツ、カウントダウン、画面遷移、Freeplay、キャラクター選択、会話）を`onXxx`命令として受け付けます。`KEY_DOWN` / `KEY_UP`はenumに予約されているだけで公式コールバックが存在しないため、動かない見せかけの互換命令は追加していません。
++
++対応する公開プロパティと標準Song Eventの一覧は [`docs/FUNKPULSE_API.md`](docs/FUNKPULSE_API.md) にまとめています。複雑な引数、オブジェクト操作、カスタムクラス作成が必要な場合は、公式と同じPolymod HScriptの`.hxc` scripted class / moduleを使用してください。
++
++さらに、標準Song Eventのうち安全に固定フィールドへ変換できる `ZoomCamera`、`ScrollSpeed`、`SetCameraBop`、`SetTargetBopSpeed`、`FocusCamera` を `emit.*` 命令として追加しました。`setScrollSpeed`、`setPlayerScrollSpeed`、`setOpponentScrollSpeed` はPlayStateの実際のStrumlineへ適用します。任意のSong Event ID、任意のDynamicデータ、StagePropやCharacterの任意メソッド呼び出しは引き続き公式Scripted Class側で実装します。
++
++公式資料: [ソースコードとライセンス](https://github.com/FunkinCrew/Funkin/blob/main/LICENSE.md) · [公式Modding Docs](https://funkincrew.github.io/funkin-modding-docs/) · [FunkPulse互換リファレンス](docs/FUNKPULSE_API.md) · [コンパイルガイド](https://github.com/FunkinCrew/Funkin/blob/main/docs/COMPILING.md)
+--- a/example_mods/pulseStarter/README.md
++++ b/example_mods/pulseStarter/README.md
+@@ -1,11 +1,11 @@
+ # Pulse Starter
+ 
+-この例はEnhanced Funkinの独自Modスクリプト形式「FunkPulse」を使います。
++この例はEnhanced Funkinの安全な宣言型スクリプト形式「FunkPulse」を使います。既存のPolymod/HScriptを置き換えるものではなく、簡単な処理を公式のHScriptコールバック名・プロパティ名に近い形で書くための薄い互換レイヤーです。
+ 
+ ```text
+ pulseStarter/
+-├── _polymod_meta.json  # 現行Mod Menuとの互換用メタデータ
+-├── pulse.json          # FunkPulseパックのmanifest
++├── _polymod_meta.json  # 現行Mod Menu互換メタデータ
++├── pulse.json          # FunkPulse manifest
+ └── logic/
+     └── main.pulse      # FunkPulse DSL
+ ```
+@@ -14,12 +14,37 @@
+ 
+ ## スクリプト構文
+ 
++公式のHScriptで使うイベント名に近い `onBeatHit` / `onStepHit` と、カメラ・体力のプロパティに近い命令を使えます。
++
+ ```text
+-beat 8 -> game.zoom 1.05
+-step 32 -> hud.zoom 1.02
+-beat 16 -> health.add -0.10
++onBeatHit 8 -> setProperty camGame.zoom 1.05
++onStepHit 32 -> setProperty camHUD.zoom 1.02
++onBeatHit 16 -> addHealth -0.10
++onBeatHit 24 -> setHealth 1.00
++onBeatHit 32 -> emit.ZoomCamera 1.10
++onBeatHit 40 -> emit.ScrollSpeed 1.25
+ ```
+ 
+-beat／step番号は0始まりです。利用できるアクションは `game.zoom` と `hud.zoom`（値は0.25〜2.5）、`health.add`（値は-2〜2）のみです。行頭の `#` はコメントです。未知の命令・範囲外の値はログに警告を出して無視します。任意のHScript/Haxeコード、ファイルアクセス、ループ、evalはサポートせず、スクリプトは限定コマンドとして実行されます。
++利用できる命令は次の通りです。
++
++- `onBeatHit N -> setProperty camGame.zoom VALUE`
++- `onStepHit N -> setProperty camHUD.zoom VALUE`
++- `onBeatHit N -> addHealth VALUE`
++- `onBeatHit N -> setHealth VALUE`
++- `onBeatHit N -> emit.ZoomCamera VALUE`
++- `onBeatHit N -> emit.ScrollSpeed VALUE`
++- `onBeatHit N -> emit.SetCameraBop VALUE`
++- `onBeatHit N -> emit.SetTargetBopSpeed VALUE`
++- `onBeatHit N -> emit.FocusCamera VALUE`（0=プレイヤー、1=相手、2=GF）
++- `onBeatHit N -> setScrollSpeed VALUE`
++- `onBeatHit N -> setPlayerScrollSpeed VALUE`
++- `onBeatHit N -> setOpponentScrollSpeed VALUE`
++- 互換用に `beat` / `step`、`game.zoom` / `hud.zoom`、`health.add` も使用可能
++
++`camGame.zoom` はゲームカメラ、`camHUD.zoom` はHUDカメラ、`health` はプレイヤーの体力を表します。beat／step番号は0始まりです。ズームは0.25〜2.5、体力は0〜2、体力の加算は-2〜2に制限されます。行頭または命令末尾の `#` 以降はコメントです。
++
++Pulseは任意のHaxe/HScript、ファイルアクセス、reflection、eval、ループを実行しません。無効な命令はログに出して無視します。そのため、複雑な処理や公式APIの全機能が必要な場合は、従来どおりPolymodのHScript scripted class / moduleを使ってください。
+ 
+ Pulseのカスタムスクリプト実行は現在の実装ではnative (`sys`) ビルド向けです。既存のPolymodによるアセット置換とHScript Modは引き続き利用できます。
++
++複雑な処理、任意の文字列引数、`Song` / `Stage` / `BaseCharacter` / `NoteKind` / `SongEvent` のクラス拡張、独自の`handleEvent()`は、公式と同じ`.hxc` scripted class / moduleで実装してください。Pulseはそれらを安全な固定命令に限定した補助APIです。
+--- a/example_mods/pulseStarter/logic/main.pulse
++++ b/example_mods/pulseStarter/logic/main.pulse
+@@ -1,8 +1,18 @@
+-# FunkPulse v1 — beat/step indices are zero-based.
+-# The first game beat is beat 0; the first step is step 0.
++# FunkPulse v1 — official-style callback/property aliases.
++# Beat and step indices are zero-based.
+ 
+-beat 0 -> game.zoom 1.05
+-beat 1 -> game.zoom 1.00
+-step 16 -> hud.zoom 1.03
+-step 17 -> hud.zoom 1.00
+-beat 8 -> health.add 0.05
++onBeatHit 0 -> setProperty camGame.zoom 1.05
++onBeatHit 1 -> setProperty camGame.zoom 1.00
++onStepHit 16 -> setProperty camHUD.zoom 1.03
++onStepHit 17 -> setProperty camHUD.zoom 1.00
++onBeatHit 8 -> addHealth 0.05
++onSongStart -> setProperty playbackRate 1.00
++onNoteHit -> addHealth 0.01
++onBeatHit 16 -> emit.ZoomCamera 1.10
++onBeatHit 20 -> emit.SetCameraBop 2.00
++onBeatHit 24 -> setScrollSpeed 1.25
++
++# Legacy aliases remain valid:
++# beat 16 -> game.zoom 1.00
++# step 32 -> hud.zoom 1.00
++# beat 24 -> health.add -0.05
+--- /dev/null
++++ b/docs/FUNKPULSE_API.md
+@@ -0,0 +1,156 @@
++# FunkPulse 公式API互換リファレンス
++
++FunkPulseは、公式のPolymod HScriptを置き換えるものではありません。公式HScriptで使われるイベント名・プロパティ名を、任意コードなしの安全な1行命令として使えるようにした互換レイヤーです。
++
++公式の高度なModは、引き続き `mods/<mod>/scripts/` の `.hxc` scripted class / module を使用してください。公式資料は [Funkin Modding Documentation](https://funkincrew.github.io/funkin-modding-docs/) です。
++
++## 基本構文
++
++```text
++EVENT [BEAT_OR_STEP_INDEX] -> ACTION VALUE
++```
++
++`onBeatHit` と `onStepHit` には必ず0始まりの番号を指定します。それ以外のイベントは番号を省略します。
++
++```text
++onBeatHit 8 -> setProperty camGame.zoom 1.05
++onStepHit 32 -> setProperty camHUD.zoom 1.02
++onSongStart -> setProperty playbackRate 1.0
++onNoteHit -> addHealth 0.05
++onBeatHit 16 -> emit.ZoomCamera 1.10
++onStepHit 32 -> emit.ScrollSpeed 1.50
++```
++
++行頭または命令末尾の `#` 以降はコメントです。1ファイルの上限は128KiB、命令数の上限は1024個です。
++
++## 公式ScriptEventコールバック対応
++
++Pulseは、現在のEnhanced Funkinが実際にScriptEventDispatcherで処理するイベントを次の名前で受け取ります。
++
++- `onCreate` — scripted object / moduleの生成
++- `onStateCreate` — stateの生成完了
++- `onDestroy` —破棄
++- `onAdd` — stateへの追加
++- `onUpdate` — 毎フレーム更新
++- `onPause` / `onResume` — 一時停止・再開
++- `onBeatHit N` / `onStepHit N` — 曲の拍・ステップ。番号は0始まり
++- `onNoteIncoming` — ノーツが表示対象になったとき
++- `onNoteHit` / `onNoteMiss` / `onNoteHoldDrop` — ノーツ判定
++- `onNoteGhostMiss` — 空打ちミス
++- `onSongEvent` — チャートのSong Event
++- `onSongStart` / `onSongEnd` / `onSongRetry` — 曲の開始・終了・リトライ
++- `onCountdownStart` / `onCountdownStep` / `onCountdownEnd` — カウントダウン
++- `onSongLoaded` — 譜面ロード完了
++- `onGameOver` — ゲームオーバー
++- `onStateChangeBegin` / `onStateChangeEnd` — state切り替え前後
++- `onSubStateOpenBegin` / `onSubStateOpenEnd` — substate開始前後
++- `onSubStateCloseBegin` / `onSubStateCloseEnd` — substate終了前後
++- `onFocusGained` / `onFocusLost` — ウィンドウフォーカス変更
++- `onCapsuleSelected` / `onDifficultySwitch` / `onSongSelected` — Freeplay操作
++- `onFreeplayIntroDone` / `onFreeplayOutro` / `onFreeplayClose` — Freeplay画面イベント
++- `onCharacterSelect` / `onCharacterDeselect` / `onCharacterConfirm` — キャラクター選択
++- `onDialogueStart` / `onDialogueLine` / `onDialogueCompleteLine` / `onDialogueSkip` / `onDialogueEnd` — 会話イベント
++
++`KEY_DOWN` と `KEY_UP` は基礎enumに予約されていますが、公式の `IScriptedClass` には対応コールバックがなく、公式ディスパッチャからも発行されません。そのためPulseでも見かけだけの対応は追加していません。
++
++## アクション
++
++### カメラ
++
++```text
++setProperty camGame.zoom VALUE
++setProperty camHUD.zoom VALUE
++cameraZoom VALUE
++hudZoom VALUE
++```
++
++`camGame.zoom` と `cameraZoom` はゲームカメラ、`camHUD.zoom` と `hudZoom` はHUDカメラに適用されます。値は0.25〜2.5です。
++
++### 体力
++
++```text
++addHealth VALUE
++setHealth VALUE
++setProperty health VALUE
++setProperty PlayState.instance.health VALUE
++```
++
++`addHealth` は-2〜2、`setHealth` は0〜2に制限されます。実行時にも0〜2へクランプします。
++
++### PlayStateの公開プロパティ
++
++```text
++setProperty currentCameraZoom VALUE
++setProperty defaultHUDCameraZoom VALUE
++setProperty playbackRate VALUE
++setProperty instrumentalVolume VALUE
++setProperty playerVocalsVolume VALUE
++setProperty opponentVocalsVolume VALUE
++setProperty cameraBopIntensity VALUE
++setProperty hudCameraZoomIntensity VALUE
++setProperty cameraZoomRate VALUE
++setProperty cameraZoomRateOffset VALUE
++```
++
++値の制限は、再生速度が0より大きく4以下、音量が0〜1、カメラ関連の強度・レートが0〜100です。`currentCameraZoom` と `defaultHUDCameraZoom` は0〜2.5です。
++
++### PlayStateの操作と標準Song Event
++
++次の命令は、公式`PlayState`の操作または既存の標準`SongEvent`を安全な固定フィールドで呼び出します。
++
++```text
++onBeatHit 8 -> setScrollSpeed 1.25
++onBeatHit 9 -> setPlayerScrollSpeed 1.50
++onBeatHit 10 -> setOpponentScrollSpeed 0.90
++onBeatHit 16 -> emit.ZoomCamera 1.10
++onBeatHit 20 -> emit.ScrollSpeed 1.50
++onBeatHit 24 -> emit.SetCameraBop 2.00
++onBeatHit 28 -> emit.SetTargetBopSpeed 2
++onBeatHit 32 -> emit.FocusCamera 0
++```
++
++対応する標準Eventは `ZoomCamera`（zoom）、`ScrollSpeed`（scroll）、`SetCameraBop`（intensity）、`SetTargetBopSpeed`（rate）、`FocusCamera`（char）です。`FocusCamera`の値は0=プレイヤー、1=相手、2=ガールフレンドです。任意のEvent IDや任意のDynamicオブジェクトを受け付ける仕様にはしていません。
++
++## 公式Scripted Classとの役割分担
++
++公式ドキュメントで定義されている次のScripted Classは、従来のPolymod/HScriptで完全に利用できます。
++
++- `Song`
++- `BaseCharacter` と各種Character subclass
++- `Stage` / `StageProp` / `Bopper`
++- `Level`
++- `NoteKind`
++- `SongEvent`
++- `PlayableCharacter`
++- `FreeplayStyle` / `NoteStyle` / `Album`
++- `Conversation` / `DialogueBox` / `Speaker`
++- `MusicBeatState` / `MusicBeatSubState`
++- `FunkinSprite`、`FlxSprite`、各種Group、Runtime Shader
++- `Module`
++
++実装済みのScripted Classラッパーには、上記のクラスに加えて次も含まれます。
++
++- `ScriptedFunkinSprite` / `ScriptedFunkinVideoSprite`
++- `ScriptedFunkinGroup`、`ScriptedFlxBasic`、`ScriptedFlxObject`、`ScriptedFlxSprite`、`ScriptedFlxSpriteGroup`
++- `ScriptedFlxTypedGroup`、`ScriptedFlxState`、`ScriptedFlxSubState`、`ScriptedFlxTransitionableState`、`ScriptedFlxStrip`
++- `ScriptedFlxRuntimeShader`
++- `ScriptedStrumline`
++- `ScriptedBopper` / `ScriptedStageProp`
++- `ScriptedBackingCard` とScripted Freeplay DJ各種
++- `ScriptedStickerPack`
++
++これらのクラスを新規作成したり、引数付きメソッドを呼んだり、ノーツやキャラクターのオブジェクトを変更したりする処理は、Pulseに無理に詰め込まず、公式と同じ `.hxc` クラスで書く方が互換性と保守性に優れます。
++
++## 標準Song Event
++
++チャート側の標準Song Eventは既存の公式APIをそのまま利用できます。現在のソースには次のイベントが登録されています。
++
++- `FocusCamera`
++- `PlayAnimation`
++- `ScrollSpeed`
++- `SetCameraBop`
++- `SetHealthIcon`
++- `SetTargetBopSpeed`
++- `ZoomCamera`
++
++新しいチャートイベントを作る場合は、公式と同じ `SongEvent` subclass を作成し、`handleEvent()`、`getTitle()`、`getEventSchema()` を実装してください。

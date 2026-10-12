@@ -1,0 +1,574 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..3bb45ee06d750c02c46e0cf1b2b70fcad6137ef3
+--- /dev/null
++++ b/MODIFICATIONS.md
+@@ -0,0 +1,72 @@
++# Enhanced Funkin — 改変内容
++
++この作業コピーは、[FunkinCrew/Funkin](https://github.com/FunkinCrew/Funkin) の `b2215482c`（README／変更履歴上の0.8.7）を土台にしたHaxe改変版です。既存のプレイ処理とPolymodを維持しながら、視覚オフセットと、独自Modパック形式・スクリプト言語を追加しています。配布ZIPはソースコードとドキュメントのみで、Git履歴、依存ライブラリ、公式アート・音声アセットは含みません。
++
++## 改良1 — Audio/Visual Offset
++
++本家のセーブデータに存在していた `audioVisualOffset` をOffset画面につなぎ、±500msで保存・調整可能にしました。正方向は譜面ノーツを判定ライン側へ進め、負方向は遅らせます。音楽再生、判定時刻、スコアには影響しません。Calibrationの基準矢印では補正を無効にして測定バイアスを防ぎ、Testでは補正後の表示を確認できます。「Reset Offsets」で従来の全体オフセットと一緒に0へ戻せます。
++
++## 改良2 — FunkPulse Mod形式
++
++従来のPolymodアセット置換とHScript Modは残し、新しい「FunkPulse」形式を追加しました。ゲームの `mods/` に入れた各Modのルートに `pulse.json`、`logic/` 以下に `.pulse` スクリプトを置きます。Mod Menuから有効にしたパックだけ読み込まれます。`_polymod_meta.json` は既存Mod Menuとの互換メタデータです。
++
++```text
++mods/my-pack/
++├── _polymod_meta.json  # Mod Menu互換用
++├── pulse.json          # FunkPulse manifest
++└── logic/
++    └── main.pulse      # 独自DSL
++```
++
++`pulse.json` の最小例:
++
++```json
++{
++  "format": "funk-pulse/v1",
++  "id": "my-pack",
++  "name": "My Pack",
++  "version": "1.0.0",
++  "entry": "logic/main.pulse"
++}
++```
++
++`.pulse` は任意コードを評価しないイベント指向の小さなDSLです。beat／step番号は0始まりで、利用できる命令はゲームカメラのズーム、HUDカメラのズーム、体力変化に限定しています。
++
++```text
++# 最初の拍で少し拡大、次の拍で元へ戻す
++beat 0 -> game.zoom 1.05
++beat 1 -> game.zoom 1.00
++step 16 -> hud.zoom 1.03
++beat 8 -> health.add -0.05
++```
++
++ズーム値は0.25〜2.5、health変化量は-2〜2です。行頭 `#` はコメント、無効な命令はログを出して無視します。スクリプトサイズと命令数にも上限を設け、ファイルアクセス・reflection・eval・ループ・任意Haxe/HScript実行は提供しません。**現実装のFunkPulse実行はnative (`sys`) ビルド向け**です。HTML5ビルドでは既存のPolymod/HScriptが引き続き利用できます。
++
++動作例は `example_mods/pulseStarter/` にあります。このフォルダを `mods/` へコピーすると試せます。`pulse.json` の `id` とModフォルダ名を一致させてください。
++
++## 変更ファイル
++
++AV補正では `source/funkin/Preferences.hx`、`source/funkin/save/Save.hx`、`source/funkin/util/GRhythmUtil.hx`、`source/funkin/ui/options/OffsetMenu.hx` を変更しました。FunkPulseでは `source/funkin/modding/FunkPulseRuntime.hx` を追加し、`source/funkin/modding/PolymodHandler.hx` と `source/funkin/modding/module/ModuleHandler.hx` を更新しました。サンプルModは `example_mods/pulseStarter/` にあります。
++
++## ビルドと確認
++
++公式ソースのビルド手順に従って基準コミットを取得し、同梱の `ENHANCED_FUNKIN.patch` を適用してください。
++
++```sh
++git clone https://github.com/FunkinCrew/Funkin.git
++cd Funkin
++git checkout b2215482c
++# ENHANCED_FUNKIN.patch をこのディレクトリへコピー
++git apply ENHANCED_FUNKIN.patch
++git submodule update --init --recursive
++hmm install
++haxelib run lime test html5
++```
++
++この作業環境では変更したHaxeモジュールの型チェック、パッチの適用検査、ソースZIPの整合性検査に成功しました。ゲーム全体の実行ビルドは未確認です。`git submodule update` は別ライセンスのゲームコンテンツを取得するため、配布物には同梱していません。
++
++## ライセンスと表示
++
++FNFソースコードと既存の著作権表示は、同梱 `LICENSE.md` のApache License 2.0に従います。変更したHaxeファイルにはこのフォークでの改変表示を付けています。`Friday Night Funkin'` とロゴの商標は The Funkin' Crew Inc. に帰属し、この改変版は公式製品ではありません。アート、音楽、音声などはソースとは別ライセンスのため、この配布物に含めていません。
++
++公式資料: [ソースコードとライセンス](https://github.com/FunkinCrew/Funkin/blob/main/LICENSE.md) · [アセットのライセンス](https://github.com/FunkinCrew/funkin.assets/blob/main/LICENSE.md) · [コンパイルガイド](https://github.com/FunkinCrew/Funkin/blob/main/docs/COMPILING.md)
+diff --git a/example_mods/.gitignore b/example_mods/.gitignore
+index d221d3f90f8475f6ef5fef85e71a96bce587f626..72c835a2f78d015d4a3c6291d697ef2683e27427 100644
+--- a/example_mods/.gitignore
++++ b/example_mods/.gitignore
+@@ -1,4 +1,5 @@
+-# Exclude any experimental mods that my have been added.
+-/*
+-!introMod
+-!testing123
+\ No newline at end of file
++# Exclude any experimental mods that may have been added.
++/*
++!introMod
++!testing123
++!pulseStarter
+diff --git a/example_mods/pulseStarter/README.md b/example_mods/pulseStarter/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..e82a4b1b6877d1a007d73dd55215b523a1da5c0d
+--- /dev/null
++++ b/example_mods/pulseStarter/README.md
+@@ -0,0 +1,25 @@
++# Pulse Starter
++
++この例はEnhanced Funkinの独自Modスクリプト形式「FunkPulse」を使います。
++
++```text
++pulseStarter/
++├── _polymod_meta.json  # 現行Mod Menuとの互換用メタデータ
++├── pulse.json          # FunkPulseパックのmanifest
++└── logic/
++    └── main.pulse      # FunkPulse DSL
++```
++
++このフォルダをゲームの `mods/` ディレクトリへコピーすると、通常のMod Menuから有効／無効を切り替えられます。`pulse.json` の `id` はフォルダ名と一致させてください。
++
++## スクリプト構文
++
++```text
++beat 8 -> game.zoom 1.05
++step 32 -> hud.zoom 1.02
++beat 16 -> health.add -0.10
++```
++
++beat／step番号は0始まりです。利用できるアクションは `game.zoom` と `hud.zoom`（値は0.25〜2.5）、`health.add`（値は-2〜2）のみです。行頭の `#` はコメントです。未知の命令・範囲外の値はログに警告を出して無視します。任意のHScript/Haxeコード、ファイルアクセス、ループ、evalはサポートせず、スクリプトは限定コマンドとして実行されます。
++
++Pulseのカスタムスクリプト実行は現在の実装ではnative (`sys`) ビルド向けです。既存のPolymodによるアセット置換とHScript Modは引き続き利用できます。
+diff --git a/example_mods/pulseStarter/_polymod_meta.json b/example_mods/pulseStarter/_polymod_meta.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d72fa95945d9a61c9dc2e956514b38f81531f85
+--- /dev/null
++++ b/example_mods/pulseStarter/_polymod_meta.json
+@@ -0,0 +1,12 @@
++{
++  "title": "Pulse Starter",
++  "description": "A starter pack for the Enhanced Funkin Pulse scripting format.",
++  "contributors": [
++    {
++      "name": "Enhanced Funkin"
++    }
++  ],
++  "api_version": "0.8.0",
++  "mod_version": "1.0.0",
++  "license": "Apache-2.0"
++}
+diff --git a/example_mods/pulseStarter/logic/main.pulse b/example_mods/pulseStarter/logic/main.pulse
+new file mode 100644
+index 0000000000000000000000000000000000000000..93f85a080a79b5a13ea8da7dde685d06f25aac60
+--- /dev/null
++++ b/example_mods/pulseStarter/logic/main.pulse
+@@ -0,0 +1,8 @@
++# FunkPulse v1 — beat/step indices are zero-based.
++# The first game beat is beat 0; the first step is step 0.
++
++beat 0 -> game.zoom 1.05
++beat 1 -> game.zoom 1.00
++step 16 -> hud.zoom 1.03
++step 17 -> hud.zoom 1.00
++beat 8 -> health.add 0.05
+diff --git a/example_mods/pulseStarter/pulse.json b/example_mods/pulseStarter/pulse.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..d047edf1fcc836d9e97705acf19a0a7a7ce3517f
+--- /dev/null
++++ b/example_mods/pulseStarter/pulse.json
+@@ -0,0 +1,7 @@
++{
++  "format": "funk-pulse/v1",
++  "id": "pulseStarter",
++  "name": "Pulse Starter",
++  "version": "1.0.0",
++  "entry": "logic/main.pulse"
++}
+diff --git a/source/funkin/Preferences.hx b/source/funkin/Preferences.hx
+index bb8771c7a4ecef72ada1fab7e136f623e8334a47..3b1045ad424953f71e9d91d960d9ecb6091d8e36 100644
+--- a/source/funkin/Preferences.hx
++++ b/source/funkin/Preferences.hx
+@@ -1,5 +1,7 @@
+ package funkin;
+ 
++// Modified in the Enhanced Funkin fork: exposes the saved visual timing offset.
++
+ #if mobile
+ import funkin.mobile.ui.FunkinHitbox;
+ import funkin.mobile.util.InAppPurchasesUtil;
+@@ -329,6 +331,26 @@ class Preferences
+     return value;
+   }
+ 
++  /**
++   * A visual-only offset in milliseconds. This moves note rendering without changing
++   * audio playback or hit judgement.
++   * @default `0`
++   */
++  public static var audioVisualOffset(get, set):Int;
++
++  static function get_audioVisualOffset():Int
++  {
++    return Save?.instance?.options?.audioVisualOffset ?? 0;
++  }
++
++  static function set_audioVisualOffset(value:Int):Int
++  {
++    var save:Save = Save.instance;
++    save.options.audioVisualOffset = value;
++    Save.system.flush();
++    return value;
++  }
++
+   /**
+    * If enabled, the game will utilize VSync (or adaptive VSync) on startup.
+    * @default `OFF`
+diff --git a/source/funkin/modding/FunkPulseRuntime.hx b/source/funkin/modding/FunkPulseRuntime.hx
+new file mode 100644
+index 0000000000000000000000000000000000000000..c95083b9f11e9d5e3153ce973a809092d6eb7803
+--- /dev/null
++++ b/source/funkin/modding/FunkPulseRuntime.hx
+@@ -0,0 +1,222 @@
++package funkin.modding;
++
++// Added in the Enhanced Funkin fork: a small, non-HScript mod scripting runtime.
++
++import funkin.modding.events.ScriptEvent;
++import funkin.modding.events.ScriptEvent.SongTimeScriptEvent;
++import funkin.modding.events.ScriptEventType;
++import funkin.play.PlayState;
++
++private typedef FunkPulseCommand =
++{
++  var trigger:String;
++  var index:Int;
++  var action:String;
++  var value:Float;
++  var source:String;
++}
++
++/**
++ * Loads the Enhanced Funkin Pulse format. Pulse is deliberately declarative:
++ * it has no eval, filesystem, reflection, or arbitrary HScript access.
++ */
++class FunkPulseRuntime
++{
++  public static final FORMAT:String = 'funk-pulse/v1';
++  static final MAX_SCRIPT_BYTES:Int = 131072;
++  static final MAX_COMMANDS:Int = 512;
++  static final COMMAND_PATTERN:EReg = new EReg(
++    '^(beat|step)\\s+([0-9]+)\\s*->\\s*(game\\.zoom|hud\\.zoom|health\\.add)\\s+(-?[0-9]+(\\.[0-9]+)?)$',
++    ''
++  );
++
++  static var commands:Array<FunkPulseCommand> = [];
++
++  /**
++   * Reloads the Pulse scripts for the currently enabled Polymod directory list.
++   * A Pulse pack remains selectable using the normal Mod Menu because its folder
++   * also contains Polymod metadata; its own manifest and logic use the new layout.
++   */
++  public static function reload(modDirs:Array<String>, modRoot:String):Void
++  {
++    commands = [];
++
++    #if sys
++    if (!sys.FileSystem.exists(modRoot)) return;
++
++    for (modDir in modDirs)
++    {
++      if (!isSafeSegment(modDir)) continue;
++
++      var packRoot:String = '$modRoot/$modDir';
++      var manifestPath:String = '$packRoot/pulse.json';
++      if (!sys.FileSystem.exists(manifestPath)) continue;
++
++      try
++      {
++        var manifest:Dynamic = haxe.Json.parse(sys.io.File.getContent(manifestPath));
++        var format:Dynamic = Reflect.field(manifest, 'format');
++        var id:Dynamic = Reflect.field(manifest, 'id');
++        var entry:Dynamic = Reflect.field(manifest, 'entry');
++
++        if (format != FORMAT || id != modDir || !Std.isOfType(entry, String))
++        {
++          trace('[FunkPulse] Ignoring invalid manifest: $manifestPath');
++          continue;
++        }
++
++        var scriptEntry:String = cast entry;
++        if (!isSafeEntry(scriptEntry))
++        {
++          trace('[FunkPulse] Ignoring unsafe script path in $manifestPath');
++          continue;
++        }
++
++        var scriptPath:String = '$packRoot/$scriptEntry';
++        if (!sys.FileSystem.exists(scriptPath) || sys.FileSystem.isDirectory(scriptPath))
++        {
++          trace('[FunkPulse] Script not found: $scriptPath');
++          continue;
++        }
++
++        var source:String = sys.io.File.getContent(scriptPath);
++        if (source.length > MAX_SCRIPT_BYTES)
++        {
++          trace('[FunkPulse] Script is too large and was ignored: $scriptPath');
++          continue;
++        }
++
++        parseScript(source, '$modDir/$scriptEntry');
++      }
++      catch (error:Dynamic)
++      {
++        trace('[FunkPulse] Failed to load $manifestPath: $error');
++      }
++    }
++
++    trace('[FunkPulse] Loaded ${commands.length} command(s) from enabled mods.');
++    #else
++    trace('[FunkPulse] Pulse packs require a native target in this build.');
++    #end
++  }
++
++  /** Execute any matching instruction when a song beat or step is dispatched. */
++  public static function dispatch(event:ScriptEvent):Void
++  {
++    if (event == null || !event.shouldPropagate || event.eventCanceled || commands.length == 0) return;
++
++    var trigger:String;
++    var index:Int;
++    switch (event.type)
++    {
++      case ScriptEventType.SONG_BEAT_HIT:
++        var timeEvent:SongTimeScriptEvent = cast event;
++        trigger = 'beat';
++        index = timeEvent.beat;
++      case ScriptEventType.SONG_STEP_HIT:
++        var timeEvent:SongTimeScriptEvent = cast event;
++        trigger = 'step';
++        index = timeEvent.step;
++      default:
++        return;
++    }
++
++    var state:Null<PlayState> = PlayState.instance;
++    if (state == null) return;
++
++    for (command in commands)
++    {
++      if (command.trigger == trigger && command.index == index)
++      {
++        execute(command, state);
++      }
++    }
++  }
++
++  static function parseScript(source:String, sourceName:String):Void
++  {
++    var lineNumber:Int = 0;
++    var added:Int = 0;
++
++    for (rawLine in source.split('\n'))
++    {
++      lineNumber++;
++      var line:String = StringTools.trim(rawLine);
++      if (line.length == 0 || StringTools.startsWith(line, '#')) continue;
++
++      if (!COMMAND_PATTERN.match(line))
++      {
++        trace('[FunkPulse] $sourceName:$lineNumber: invalid directive; skipped.');
++        continue;
++      }
++
++      var trigger:String = COMMAND_PATTERN.matched(1);
++      var parsedIndex:Null<Int> = Std.parseInt(COMMAND_PATTERN.matched(2));
++      var action:String = COMMAND_PATTERN.matched(3);
++      var value:Float = Std.parseFloat(COMMAND_PATTERN.matched(4));
++
++      if (parsedIndex == null || parsedIndex < 0 || parsedIndex > 100000 || Math.isNaN(value))
++      {
++        trace('[FunkPulse] $sourceName:$lineNumber: out-of-range value; skipped.');
++        continue;
++      }
++
++      var validValue:Bool = switch (action)
++      {
++        case 'game.zoom', 'hud.zoom': value >= 0.25 && value <= 2.5;
++        case 'health.add': value >= -2.0 && value <= 2.0;
++        default: false;
++      }
++
++      if (!validValue)
++      {
++        trace('[FunkPulse] $sourceName:$lineNumber: value outside the action limit; skipped.');
++        continue;
++      }
++
++      if (commands.length >= MAX_COMMANDS)
++      {
++        trace('[FunkPulse] Command limit reached; remaining directives were ignored.');
++        return;
++      }
++
++      commands.push({
++        trigger: trigger,
++        index: parsedIndex,
++        action: action,
++        value: value,
++        source: '$sourceName:$lineNumber'
++      });
++      added++;
++    }
++
++    trace('[FunkPulse] $sourceName: loaded $added command(s).');
++  }
++
++  static function execute(command:FunkPulseCommand, state:PlayState):Void
++  {
++    switch (command.action)
++    {
++      case 'game.zoom':
++        state.currentCameraZoom = command.value;
++      case 'hud.zoom':
++        state.defaultHUDCameraZoom = command.value;
++        state.camHUD.zoom = command.value;
++      case 'health.add':
++        state.health = Math.max(0.0, Math.min(2.0, state.health + command.value));
++      default:
++        trace('[FunkPulse] Unsupported action at ${command.source}.');
++    }
++  }
++
++  static function isSafeSegment(value:String):Bool
++  {
++    return value.length > 0 && value != '.' && value != '..' && ~/^[A-Za-z0-9_-]+$/.match(value);
++  }
++
++  static function isSafeEntry(value:String):Bool
++  {
++    return StringTools.startsWith(value, 'logic/') && StringTools.endsWith(value, '.pulse') && value.indexOf('..') == -1
++      && value.indexOf('\\') == -1 && !StringTools.startsWith(value, '/');
++  }
++}
+diff --git a/source/funkin/modding/PolymodHandler.hx b/source/funkin/modding/PolymodHandler.hx
+index 20b0ea77f8317c669a1f300366abd27bdf481cf8..ab62f1fff764df702c7dc82b8d891d8d26637b3b 100644
+--- a/source/funkin/modding/PolymodHandler.hx
++++ b/source/funkin/modding/PolymodHandler.hx
+@@ -1,4 +1,5 @@
+ package funkin.modding;
++// Modified in the Enhanced Funkin fork: loads enabled Pulse-format script packs.
+ 
+ import polymod.fs.ZipFileSystem;
+ import funkin.data.dialogue.ConversationRegistry;
+@@ -207,6 +208,9 @@ class PolymodHandler
+       loadedModIds.push(mod.id);
+     }
+ 
++    // Load Pulse scripts only from the mod directories enabled in this Polymod pass.
++    FunkPulseRuntime.reload(loadedModDirs, MOD_FOLDER);
++
+     #if FEATURE_DEBUG_FUNCTIONS
+     var fileList:Array<String> = Polymod.listModFiles(PolymodAssetType.IMAGE);
+     trace('Installed mods have replaced ${fileList.length} images.');
+diff --git a/source/funkin/modding/module/ModuleHandler.hx b/source/funkin/modding/module/ModuleHandler.hx
+index faeaa1368f7aec32bbb2718ab76e3b1ebae00989..964f205ea35648f7f77957d0a3a8931e83ddcc57 100644
+--- a/source/funkin/modding/module/ModuleHandler.hx
++++ b/source/funkin/modding/module/ModuleHandler.hx
+@@ -1,5 +1,7 @@
+ package funkin.modding.module;
+ 
++// Modified in the Enhanced Funkin fork: dispatches safe Pulse-script commands.
++
+ import funkin.util.SortUtil;
+ import funkin.modding.events.ScriptEvent.UpdateScriptEvent;
+ import funkin.modding.events.ScriptEvent;
+@@ -157,6 +159,8 @@ class ModuleHandler
+         ScriptEventDispatcher.callEvent(module, event);
+       }
+     }
++
++    funkin.modding.FunkPulseRuntime.dispatch(event);
+   }
+ 
+   public static inline function callOnCreate():Void
+diff --git a/source/funkin/save/Save.hx b/source/funkin/save/Save.hx
+index 8bfcf36bf72ff14bd4712907d8b084f740fc6b87..d770e2850b787a7edcbb5f99830f81ef94ae692e 100644
+--- a/source/funkin/save/Save.hx
++++ b/source/funkin/save/Save.hx
+@@ -1,5 +1,7 @@
+ package funkin.save;
+ 
++// Modified in the Enhanced Funkin fork: documents the now-active visual AV offset.
++
+ import flixel.util.FlxSave;
+ import funkin.input.Controls.Device;
+ import funkin.data.character.CharacterData.CharacterDataParser;
+@@ -1195,8 +1197,7 @@ typedef SaveDataOptions =
+   var globalOffset:Int;
+ 
+   /**
+-   * Unused !!
+-   * Affects the delay between the audio and the visuals during gameplay.
++   * Shifts note rendering relative to audio without changing judgement timing.
+    * @default `0`
+    */
+   var audioVisualOffset:Int;
+diff --git a/source/funkin/ui/options/OffsetMenu.hx b/source/funkin/ui/options/OffsetMenu.hx
+index 3c00ed88aa053732849b5874a4020572ea614f59..a2e8333780112c4ce94047a57089ab1b09b51fbc 100644
+--- a/source/funkin/ui/options/OffsetMenu.hx
++++ b/source/funkin/ui/options/OffsetMenu.hx
+@@ -1,5 +1,7 @@
+ package funkin.ui.options;
+ 
++// Modified in the Enhanced Funkin fork: adds a visual-only timing offset control.
++
+ import funkin.ui.MenuList.MenuTypedList;
+ import funkin.ui.TextMenuList.TextMenuItem;
+ import funkin.util.GRhythmUtil;
+@@ -47,6 +49,7 @@ class OffsetMenu extends Page<OptionsState.OptionsMenuPageName>
+ 
+   // Page<OptionsState.OptionsMenuPageName> stuff
+   var offsetItem:NumberPreferenceItem;
++  var audioVisualOffsetItem:NumberPreferenceItem;
+   var items:TextMenuList;
+   var preferenceItems:FlxTypedSpriteGroup<FlxSprite>;
+   var backButton:FunkinBackButton;
+@@ -239,10 +242,16 @@ class OffsetMenu extends Page<OptionsState.OptionsMenuPageName>
+     {
+       Preferences.globalOffset = Std.int(value);
+     }, null, Preferences.globalOffset, -1500, 1500, 1.0, 2, 5);
+-    createButtonItem('Reset Offset', function()
++    audioVisualOffsetItem = createPrefItemNumber('Audio/Visual Offset', 'Adjust note rendering relative to the song audio. This does not change hit timing.', function(value:Float)
++    {
++      Preferences.audioVisualOffset = Std.int(value);
++    }, null, Preferences.audioVisualOffset, -500, 500, 1.0, 0, 5);
++    createButtonItem('Reset Offsets', function()
+     {
+       Preferences.globalOffset = 0;
+       offsetItem.currentValue = Preferences.globalOffset;
++      Preferences.audioVisualOffset = 0;
++      audioVisualOffsetItem.currentValue = Preferences.audioVisualOffset;
+     });
+     createButtonItem('Offset Calibration', function()
+     {
+@@ -580,7 +589,8 @@ class OffsetMenu extends Page<OptionsState.OptionsMenuPageName>
+         var arrow:ArrowData = arrows[i];
+ 
+         var ms:Float = arrow.beat * msPerBeat;
+-        var offset:Float = GRhythmUtil.getNoteY(ms - appliedOffsetLerp, 2, false, localConductor);
++        // Keep the input calibration reference neutral; visual offset remains active in Test mode.
++        var offset:Float = GRhythmUtil.getNoteY(ms - appliedOffsetLerp, 2, false, localConductor, !calibrating);
+         arrow.sprite.y = receptor.y + offset - (arrow.sprite.height / 2);
+         arrow.sprite.x = receptor.x - (arrow.sprite.width / 2);
+ 
+diff --git a/source/funkin/util/GRhythmUtil.hx b/source/funkin/util/GRhythmUtil.hx
+index 167c5fddd3c35e1c3fe48a97d0073bf540ad398e..52cc55cd96a3f58e6f7a8ce52502b412d7c8ed66 100644
+--- a/source/funkin/util/GRhythmUtil.hx
++++ b/source/funkin/util/GRhythmUtil.hx
+@@ -1,5 +1,7 @@
+ package funkin.util;
+ 
++// Modified in the Enhanced Funkin fork: visual AV offset affects rendering only.
++
+ import funkin.play.notes.NoteSprite;
+ import funkin.play.notes.Strumline;
+ import funkin.Conductor;
+@@ -119,9 +121,12 @@ class GRhythmUtil
+    * @param conductorInUse The conductor to use for calculating the y-position.
+    * @return The y-position of the note.
+    */
+-  public static function getNoteY(strumTime:Float, scrollSpeed:Float, downscroll:Bool = false, ?conductorInUse:Conductor):Float
++  public static function getNoteY(strumTime:Float, scrollSpeed:Float, downscroll:Bool = false, ?conductorInUse:Conductor,
++      applyAudioVisualOffset:Bool = true):Float
+   {
+     if (conductorInUse == null) conductorInUse = Conductor.instance;
+-    return Constants.PIXELS_PER_MS * (conductorInUse.getTimeWithDelta() - strumTime) * scrollSpeed * (downscroll ? 1 : -1);
++    var visualOffset:Float = applyAudioVisualOffset ? conductorInUse.audioVisualOffset : 0;
++    var visualSongPosition:Float = conductorInUse.getTimeWithDelta() + visualOffset;
++    return Constants.PIXELS_PER_MS * (visualSongPosition - strumTime) * scrollSpeed * (downscroll ? 1 : -1);
+   }
+ }

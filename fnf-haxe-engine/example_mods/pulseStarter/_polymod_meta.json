@@ -1,0 +1,12 @@
+{
+  "title": "Pulse Starter",
+  "description": "A starter pack for the Enhanced Funkin Pulse scripting format.",
+  "contributors": [
+    {
+      "name": "Enhanced Funkin"
+    }
+  ],
+  "api_version": "0.8.0",
+  "mod_version": "1.0.0",
+  "license": "Apache-2.0"
+}

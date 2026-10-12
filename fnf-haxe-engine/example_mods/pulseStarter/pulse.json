@@ -1,0 +1,7 @@
+{
+  "format": "funk-pulse/v1",
+  "id": "pulseStarter",
+  "name": "Pulse Starter",
+  "version": "1.0.0",
+  "entry": "logic/main.pulse"
+}
